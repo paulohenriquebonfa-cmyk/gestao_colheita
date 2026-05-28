@@ -16,6 +16,16 @@ type Notice = { type: NoticeType; message: string } | null
 
 const initialFilters: Filters = {}
 
+function isUuidLike(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function placaLegivel(rawPlaca: string, nomeCaminhao?: string) {
+  if (nomeCaminhao) return nomeCaminhao
+  if (isUuidLike(rawPlaca)) return 'Caminhao sem placa cadastrada'
+  return rawPlaca
+}
+
 function App() {
   const [session, setSession] = useState<UserSession | null>(null)
   const [email, setEmail] = useState('')
@@ -802,7 +812,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
       <ul>
         {cargas.slice(-5).reverse().map((c) => (
           <li key={c.id}>
-            {c.data} | {placaPorId.get(c.placa) ?? c.placa} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {statusLabel[c.sync_status]}
+            {c.data} | {placaLegivel(c.placa, placaPorId.get(c.placa))} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {statusLabel[c.sync_status]}
           </li>
         ))}
       </ul>
@@ -1825,7 +1835,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | Placa: {nomeCaminhao.get(c.placa) ?? c.placa} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusCarga[c.sync_status]}
+            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusCarga[c.sync_status]}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>
