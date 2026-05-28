@@ -24,6 +24,7 @@ function App() {
   const [tab, setTab] = useState<Tab>('dashboard')
   const [refreshTick, setRefreshTick] = useState(0)
   const [notice, setNotice] = useState<Notice>(null)
+  const [syncDebug, setSyncDebug] = useState('')
 
   useEffect(() => {
     installSyncListeners()
@@ -35,6 +36,15 @@ function App() {
     const onSyncComplete = () => setRefreshTick((v) => v + 1)
     window.addEventListener('colheita-sync-complete', onSyncComplete)
     return () => window.removeEventListener('colheita-sync-complete', onSyncComplete)
+  }, [])
+
+  useEffect(() => {
+    const onSyncError = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ message?: string }>).detail
+      if (detail?.message) setSyncDebug(detail.message)
+    }
+    window.addEventListener('colheita-sync-error', onSyncError as EventListener)
+    return () => window.removeEventListener('colheita-sync-error', onSyncError as EventListener)
   }, [])
 
   useEffect(() => {
@@ -99,6 +109,7 @@ function App() {
       return
     }
     try {
+      setSyncDebug('')
       await runSync()
       notify('success', 'Sincronizacao feita com sucesso.')
     } catch {
@@ -137,6 +148,7 @@ function App() {
   return (
     <main className="app-shell">
       {notice && <div className={`notice ${notice.type}`}>{notice.message}</div>}
+      {syncDebug && <div className="notice error">Detalhe tecnico: {syncDebug}</div>}
       <header className="topbar">
         <div>
           <h1>Gestao de Colheita</h1>

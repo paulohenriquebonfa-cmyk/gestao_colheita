@@ -75,11 +75,15 @@ async function pullFromCloud() {
 
 export async function runSync() {
   if (!hasSupabase) {
-    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason: 'supabase_not_configured' } }))
+    const reason = 'supabase_not_configured'
+    window.dispatchEvent(new CustomEvent('colheita-sync-error', { detail: { reason, message: 'Supabase nao configurado.' } }))
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason } }))
     return
   }
   if (!navigator.onLine) {
-    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason: 'offline' } }))
+    const reason = 'offline'
+    window.dispatchEvent(new CustomEvent('colheita-sync-error', { detail: { reason, message: 'Sem conexao com a internet.' } }))
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason } }))
     return
   }
   try {
@@ -89,6 +93,10 @@ export async function runSync() {
     }
     await pullFromCloud()
     window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: true } }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Erro desconhecido na sincronizacao.'
+    window.dispatchEvent(new CustomEvent('colheita-sync-error', { detail: { reason: 'sync_exception', message } }))
+    throw error
   } finally {
     window.dispatchEvent(new CustomEvent('colheita-sync-complete'))
   }
