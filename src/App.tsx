@@ -32,11 +32,18 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const onSyncComplete = () => setRefreshTick((v) => v + 1)
+    window.addEventListener('colheita-sync-complete', onSyncComplete)
+    return () => window.removeEventListener('colheita-sync-complete', onSyncComplete)
+  }, [])
+
+  useEffect(() => {
     if (!hasSupabase || !supabase) return
     void supabase.auth.getSession().then(({ data }) => {
       const s = data.session
       if (s?.user) {
         setSession({ id: s.user.id, email: s.user.email ?? 'usuario' })
+        void runSync()
       }
     })
   }, [])
@@ -56,6 +63,7 @@ function App() {
         return
       }
       setSession({ id: data.user.id, email: data.user.email ?? email })
+      await runSync()
       return
     }
 
@@ -65,6 +73,11 @@ function App() {
     }
 
     setSession({ id: `local-${email}`, email })
+  }
+
+  async function handleSyncClick() {
+    await runSync()
+    notify('success', 'Sincronizacao concluida.')
   }
 
   async function logout() {
@@ -104,7 +117,7 @@ function App() {
           <p>{session.email}</p>
         </div>
         <div className="actions">
-          <button onClick={() => void runSync()}>Sincronizar</button>
+          <button onClick={() => void handleSyncClick()}>Sincronizar</button>
           <button onClick={logout}>Sair</button>
         </div>
       </header>
@@ -981,29 +994,31 @@ function ArmazenagemVendas({
   const [vArmazem, setVArmazem] = useState('')
   const [vSacas, setVSacas] = useState('')
   const [vValorSaca, setVValorSaca] = useState('')
-  const [produtoresExcluidos, setProdutoresExcluidos] = useState<string[]>([])
-  const [produtoresExcluidosSalvos, setProdutoresExcluidosSalvos] = useState<string[]>([])
+  const [produtoresExcluidos, setProdutoresExcluidos] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(`estoque_excluir_produtores_${userId}`)
+      if (!raw) return []
+      const arr = JSON.parse(raw) as string[]
+      return Array.isArray(arr) ? arr : []
+    } catch {
+      return []
+    }
+  })
+  const [produtoresExcluidosSalvos, setProdutoresExcluidosSalvos] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(`estoque_excluir_produtores_${userId}`)
+      if (!raw) return []
+      const arr = JSON.parse(raw) as string[]
+      return Array.isArray(arr) ? arr : []
+    } catch {
+      return []
+    }
+  })
 
   const [ajArmazem, setAjArmazem] = useState('')
   const [ajSacas, setAjSacas] = useState('')
   const [ajMotivo, setAjMotivo] = useState('')
   const [ajTipo, setAjTipo] = useState<'entrada' | 'saida'>('entrada')
-
-  useEffect(() => {
-    const key = `estoque_excluir_produtores_${userId}`
-    const raw = localStorage.getItem(key)
-    if (raw) {
-      try {
-        const arr = JSON.parse(raw) as string[]
-        if (Array.isArray(arr)) {
-          setProdutoresExcluidos(arr)
-          setProdutoresExcluidosSalvos(arr)
-        }
-      } catch {
-        // ignore parse error
-      }
-    }
-  }, [userId])
 
   useEffect(() => {
     void Promise.all([

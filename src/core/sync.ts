@@ -66,12 +66,19 @@ async function pullFromCloud() {
 }
 
 export async function runSync() {
-  if (!hasSupabase || !navigator.onLine) return
-  const ops = await db.pending_ops.orderBy('updated_at').toArray()
-  for (const op of ops) {
-    await pushOp(op)
+  if (!hasSupabase || !navigator.onLine) {
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete'))
+    return
   }
-  await pullFromCloud()
+  try {
+    const ops = await db.pending_ops.orderBy('updated_at').toArray()
+    for (const op of ops) {
+      await pushOp(op)
+    }
+    await pullFromCloud()
+  } finally {
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete'))
+  }
 }
 
 export function installSyncListeners() {
