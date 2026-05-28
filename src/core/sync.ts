@@ -1,6 +1,6 @@
 import { db } from './db'
 import { hasSupabase, supabase } from './supabase'
-import type { BaseEntity, PendingOp } from './types'
+import type { BaseEntity, Carga, PendingOp, Talhao } from './types'
 
 const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao'] as const
 
@@ -9,6 +9,55 @@ async function pushOp(op: PendingOp) {
   if (!TABLES.includes(op.table as (typeof TABLES)[number])) return true
 
   const table = op.table as (typeof TABLES)[number]
+  if (table === 'cargas') {
+    const carga = op.payload as Carga
+    const propriedade = await db.propriedades.get(carga.propriedade_id)
+    const talhao = await db.talhoes.get(carga.talhao_id)
+    const produtor = await db.produtores.get(carga.produtor_id)
+    const variedade = await db.variedades.get(carga.variedade_id)
+    const armazem = await db.armazens.get(carga.armazem_id)
+
+    const deps: Array<{ table: 'propriedades' | 'talhoes' | 'produtores' | 'variedades' | 'armazens'; row: BaseEntity | Talhao | undefined }> = [
+      { table: 'propriedades', row: propriedade },
+      { table: 'talhoes', row: talhao },
+      { table: 'produtores', row: produtor },
+      { table: 'variedades', row: variedade },
+      { table: 'armazens', row: armazem }
+    ]
+
+    for (const dep of deps) {
+      if (!dep.row) continue
+      const { error: depError } = await supabase.from(dep.table).upsert(dep.row as never, { onConflict: 'id' })
+      if (depError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: `dependencia ${dep.table}: ${depError.message}`
+        })
+        return false
+      }
+    }
+  }
+  if (table === 'venda_grao') {
+    const venda = op.payload as { produtor_id: string; armazem_cliente_id: string }
+    const produtor = await db.produtores.get(venda.produtor_id)
+    const armazem = await db.armazens.get(venda.armazem_cliente_id)
+    const deps: Array<{ table: 'produtores' | 'armazens'; row: BaseEntity | undefined }> = [
+      { table: 'produtores', row: produtor },
+      { table: 'armazens', row: armazem }
+    ]
+    for (const dep of deps) {
+      if (!dep.row) continue
+      const { error: depError } = await supabase.from(dep.table).upsert(dep.row as never, { onConflict: 'id' })
+      if (depError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: `dependencia ${dep.table}: ${depError.message}`
+        })
+        return false
+      }
+    }
+  }
+
   const { error } = await supabase.from(table).upsert(op.payload as never, { onConflict: 'id' })
 
   if (error) {
