@@ -273,6 +273,45 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
     }
   }
 
+  async function excluirTodosDados() {
+    const confirmou = window.confirm('Tem certeza que deseja EXCLUIR TODOS OS DADOS? Esta acao nao pode ser desfeita.')
+    if (!confirmou) return
+    const confirmouNovamente = window.confirm('Confirmacao final: apagar tudo agora?')
+    if (!confirmouNovamente) return
+
+    try {
+      if (supabase) {
+        await supabase.from('movimento_estoque').delete().neq('id', '')
+        await supabase.from('venda_grao').delete().neq('id', '')
+        await supabase.from('estoque_armazem').delete().neq('id', '')
+        await supabase.from('cargas').delete().neq('id', '')
+        await supabase.from('talhoes').delete().neq('id', '')
+        await supabase.from('caminhoes').delete().neq('id', '')
+        await supabase.from('variedades').delete().neq('id', '')
+        await supabase.from('produtores').delete().neq('id', '')
+        await supabase.from('propriedades').delete().neq('id', '')
+        await supabase.from('armazens').delete().neq('id', '')
+      }
+
+      await db.pending_ops.clear()
+      await db.movimento_estoque.clear()
+      await db.venda_grao.clear()
+      await db.estoque_armazem.clear()
+      await db.cargas.clear()
+      await db.talhoes.clear()
+      await db.caminhoes.clear()
+      await db.variedades.clear()
+      await db.produtores.clear()
+      await db.propriedades.clear()
+      await db.armazens.clear()
+
+      onNotify('success', 'Todos os dados foram excluidos com sucesso.')
+      window.location.reload()
+    } catch {
+      onNotify('error', 'Falha ao excluir todos os dados.')
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Assistente de Configuracao</h2>
@@ -306,6 +345,7 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
           Importar Backup (JSON)
           <input type="file" accept=".json,application/json" onChange={importarBackup} />
         </label>
+        <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
     </section>
@@ -768,12 +808,14 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [talhoes, setTalhoes] = useState<Talhao[]>([])
   const [caminhoes, setCaminhoes] = useState<BaseEntity[]>([])
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    void Promise.all([db.cargas.toArray(), db.talhoes.toArray(), db.caminhoes.toArray()]).then(([cs, ts, cms]) => {
+    void Promise.all([db.cargas.toArray(), db.talhoes.toArray(), db.caminhoes.toArray(), db.pending_ops.toArray()]).then(([cs, ts, cms, ops]) => {
       setCargas(cs)
       setTalhoes(ts)
       setCaminhoes(cms)
+      setPendingIds(new Set(ops.map((o) => o.record_id)))
     })
   }, [refreshTick])
 
@@ -812,7 +854,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
       <ul>
         {cargas.slice(-5).reverse().map((c) => (
           <li key={c.id}>
-            {c.data} | {placaLegivel(c.placa, placaPorId.get(c.placa))} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {statusLabel[c.sync_status]}
+            {c.data} | {placaLegivel(c.placa, placaPorId.get(c.placa))} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {pendingIds.has(c.id) ? statusLabel.pending_sync : statusLabel.synced}
           </li>
         ))}
       </ul>
@@ -1624,6 +1666,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
   const [filters, setFilters] = useState<Filters>(initialFilters)
   const [cargas, setCargas] = useState<Carga[]>([])
   const [refs, setRefs] = useState<{[k: string]: BaseEntity[] | Talhao[]}>({})
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set())
   const [editId, setEditId] = useState('')
   const [editData, setEditData] = useState('')
   const [editPlaca, setEditPlaca] = useState('')
@@ -1643,10 +1686,13 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       db.talhoes.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
-      db.armazens.toArray()
-    ]).then(([cs, propriedades, talhoes, produtores, variedades, armazens]) => {
+      db.armazens.toArray(),
+      db.caminhoes.toArray(),
+      db.pending_ops.toArray()
+    ]).then(([cs, propriedades, talhoes, produtores, variedades, armazens, caminhoes, ops]) => {
       setCargas(cs)
-      setRefs({ propriedades, talhoes, produtores, variedades, armazens })
+      setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
+      setPendingIds(new Set(ops.map((o) => o.record_id)))
     })
   }, [refreshTick])
 
@@ -1835,7 +1881,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusCarga[c.sync_status]}
+            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {pendingIds.has(c.id) ? statusCarga.pending_sync : statusCarga.synced}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>
