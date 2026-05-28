@@ -780,10 +780,10 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
   const statusLabel: Record<Carga['sync_status'], string> = {
-    local_only: 'Local',
-    pending_sync: 'Pendente',
+    local_only: 'Somente neste aparelho',
+    pending_sync: 'Pendente de sincronizacao',
     synced: 'Sincronizado',
-    sync_error: 'Erro'
+    sync_error: 'Erro de sincronizacao'
   }
 
   return (

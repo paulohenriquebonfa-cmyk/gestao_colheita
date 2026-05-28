@@ -70,7 +70,12 @@ async function pushOp(op: PendingOp) {
     }
   }
 
-  const { error } = await supabase.from(table).upsert(op.payload as never, { onConflict: 'id' })
+  const payload = op.payload as Record<string, unknown>
+  const payloadToSend = payload && typeof payload === 'object' && 'sync_status' in payload
+    ? { ...payload, sync_status: 'synced' }
+    : payload
+
+  const { error } = await supabase.from(table).upsert(payloadToSend as never, { onConflict: 'id' })
 
   if (error) {
     await db.pending_ops.update(op.id, {
