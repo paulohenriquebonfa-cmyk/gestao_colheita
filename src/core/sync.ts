@@ -122,16 +122,18 @@ async function pullFromCloud() {
       continue
     }
 
-    if (table === 'propriedades') await db.propriedades.bulkPut(data as BaseEntity[])
-    else if (table === 'produtores') await db.produtores.bulkPut(data as BaseEntity[])
-    else if (table === 'variedades') await db.variedades.bulkPut(data as BaseEntity[])
-    else if (table === 'armazens') await db.armazens.bulkPut(data as BaseEntity[])
-    else if (table === 'caminhoes') await db.caminhoes.bulkPut(data as BaseEntity[])
-    else if (table === 'talhoes') await db.talhoes.bulkPut(data as never[])
-    else if (table === 'cargas') await db.cargas.bulkPut(data as never[])
-    else if (table === 'estoque_armazem') await db.estoque_armazem.bulkPut(data as never[])
-    else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(data as never[])
-    else if (table === 'venda_grao') await db.venda_grao.bulkPut(data as never[])
+    const normalized = (data as Array<Record<string, unknown>>).map((row) => ({ ...row, sync_status: 'synced' }))
+
+    if (table === 'propriedades') await db.propriedades.bulkPut(normalized as BaseEntity[])
+    else if (table === 'produtores') await db.produtores.bulkPut(normalized as BaseEntity[])
+    else if (table === 'variedades') await db.variedades.bulkPut(normalized as BaseEntity[])
+    else if (table === 'armazens') await db.armazens.bulkPut(normalized as BaseEntity[])
+    else if (table === 'caminhoes') await db.caminhoes.bulkPut(normalized as BaseEntity[])
+    else if (table === 'talhoes') await db.talhoes.bulkPut(normalized as never[])
+    else if (table === 'cargas') await db.cargas.bulkPut(normalized as never[])
+    else if (table === 'estoque_armazem') await db.estoque_armazem.bulkPut(normalized as never[])
+    else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(normalized as never[])
+    else if (table === 'venda_grao') await db.venda_grao.bulkPut(normalized as never[])
   }
 
   if (pullErrors.length > 0) {
