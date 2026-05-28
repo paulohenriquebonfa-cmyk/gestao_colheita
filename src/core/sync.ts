@@ -88,8 +88,16 @@ export async function runSync() {
   }
   try {
     const ops = await db.pending_ops.orderBy('updated_at').toArray()
+    const failed: string[] = []
     for (const op of ops) {
-      await pushOp(op)
+      const ok = await pushOp(op)
+      if (!ok) {
+        const refreshed = await db.pending_ops.get(op.id)
+        failed.push(`${op.table}: ${refreshed?.error ?? 'falha ao enviar'}`)
+      }
+    }
+    if (failed.length > 0) {
+      throw new Error(`Falha ao enviar dados para nuvem: ${failed.join(' | ')}`)
     }
     await pullFromCloud()
     window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: true } }))
