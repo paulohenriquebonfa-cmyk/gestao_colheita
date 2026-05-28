@@ -10,7 +10,7 @@ export default defineConfig({
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Sistema de Gestao de Colheita',
-        short_name: 'Colheita',
+        short_name: 'Gestao Colheita',
         start_url: '/',
         display: 'standalone',
         background_color: '#f5f3eb',
