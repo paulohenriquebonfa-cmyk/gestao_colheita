@@ -1814,6 +1814,7 @@ async function bootstrapDemoData() {
   for (const nome of records) {
     const rec = baseRecord(nome, user)
     await db.propriedades.put(rec)
+    await queueOp('propriedades', rec.id, rec)
   }
 }
 
