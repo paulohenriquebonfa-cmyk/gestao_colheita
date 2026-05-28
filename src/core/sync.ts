@@ -48,9 +48,13 @@ async function pushOp(op: PendingOp) {
 async function pullFromCloud() {
   if (!supabase) return
 
+  const pullErrors: string[] = []
   for (const table of TABLES) {
     const { data, error } = await supabase.from(table).select('*')
-    if (error || !data) continue
+    if (error || !data) {
+      if (error) pullErrors.push(`${table}: ${error.message}`)
+      continue
+    }
 
     if (table === 'propriedades') await db.propriedades.bulkPut(data as BaseEntity[])
     else if (table === 'produtores') await db.produtores.bulkPut(data as BaseEntity[])
@@ -63,11 +67,19 @@ async function pullFromCloud() {
     else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(data as never[])
     else if (table === 'venda_grao') await db.venda_grao.bulkPut(data as never[])
   }
+
+  if (pullErrors.length > 0) {
+    throw new Error(`Falha ao baixar dados da nuvem: ${pullErrors.join(' | ')}`)
+  }
 }
 
 export async function runSync() {
-  if (!hasSupabase || !navigator.onLine) {
-    window.dispatchEvent(new CustomEvent('colheita-sync-complete'))
+  if (!hasSupabase) {
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason: 'supabase_not_configured' } }))
+    return
+  }
+  if (!navigator.onLine) {
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason: 'offline' } }))
     return
   }
   try {
@@ -76,6 +88,7 @@ export async function runSync() {
       await pushOp(op)
     }
     await pullFromCloud()
+    window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: true } }))
   } finally {
     window.dispatchEvent(new CustomEvent('colheita-sync-complete'))
   }

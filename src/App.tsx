@@ -38,6 +38,20 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const onFocus = () => {
+      void runSync()
+    }
+    const interval = window.setInterval(() => {
+      void runSync()
+    }, 45000)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.clearInterval(interval)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!hasSupabase || !supabase) return
     void supabase.auth.getSession().then(({ data }) => {
       const s = data.session
@@ -76,8 +90,20 @@ function App() {
   }
 
   async function handleSyncClick() {
-    await runSync()
-    notify('success', 'Sincronizacao concluida.')
+    if (!navigator.onLine) {
+      notify('error', 'Sem internet. Conecte-se para sincronizar.')
+      return
+    }
+    if (!hasSupabase) {
+      notify('error', 'Sincronizacao em nuvem nao configurada.')
+      return
+    }
+    try {
+      await runSync()
+      notify('success', 'Sincronizacao feita com sucesso.')
+    } catch {
+      notify('error', 'Falha na sincronizacao. Tente novamente.')
+    }
   }
 
   async function logout() {
