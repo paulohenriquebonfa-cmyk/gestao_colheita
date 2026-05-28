@@ -188,14 +188,54 @@ function App() {
       {tab === 'analises' && <Analises refreshTick={refreshTick} />}
       {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} onNotify={notify} />}
       {tab === 'vendas' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} />}
+      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} />}
     </main>
   )
 }
 
-function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, message: string) => void }) {
+function AssistenteConfiguracao({
+  onNotify,
+  user,
+  onRefresh
+}: {
+  onNotify: (type: NoticeType, message: string) => void
+  user: UserSession
+  onRefresh: () => void
+}) {
   const conectado = hasSupabase
   const [backupInfo, setBackupInfo] = useState('')
+  const [lgpdCanal, setLgpdCanal] = useState('')
+  const [retencaoDias, setRetencaoDias] = useState('730')
+
+  useEffect(() => {
+    const canalKey = `lgpd_channel_${user.id}`
+    const retencaoKey = `lgpd_retention_days_${user.id}`
+    const canalSalvo = localStorage.getItem(canalKey)
+    const retencaoSalva = localStorage.getItem(retencaoKey)
+    setLgpdCanal(canalSalvo || user.email)
+    if (retencaoSalva) setRetencaoDias(retencaoSalva)
+  }, [user.id, user.email])
+
+  function baixarJson(fileName: string, payload: unknown) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function salvarCanalLgpd() {
+    const canal = lgpdCanal.trim()
+    if (!canal) {
+      onNotify('error', 'Informe um canal LGPD valido.')
+      return
+    }
+    localStorage.setItem(`lgpd_channel_${user.id}`, canal)
+    localStorage.setItem(`lgpd_retention_days_${user.id}`, retencaoDias)
+    onNotify('success', 'Configuracao LGPD salva com sucesso.')
+  }
 
   async function exportarBackup() {
     const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
@@ -216,16 +256,174 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
       versao: 1,
       dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao }
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
     const stamp = localDateYmd()
-    a.href = url
-    a.download = `backup-colheita-${stamp}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+    baixarJson(`backup-colheita-${stamp}.json`, payload)
     setBackupInfo('Backup exportado com sucesso.')
     onNotify('success', 'Backup exportado com sucesso.')
+  }
+
+  async function exportarDadosTitular() {
+    const dono = (rows: Array<{ created_by: string }>) => rows.filter((r) => r.created_by === user.id)
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+      db.propriedades.toArray(),
+      db.produtores.toArray(),
+      db.variedades.toArray(),
+      db.armazens.toArray(),
+      db.caminhoes.toArray(),
+      db.talhoes.toArray(),
+      db.cargas.toArray(),
+      db.estoque_armazem.toArray(),
+      db.movimento_estoque.toArray(),
+      db.venda_grao.toArray()
+    ])
+    const payload = {
+      titular: { id: user.id, email: user.email },
+      exportado_em: nowIso(),
+      dados: {
+        propriedades: dono(propriedades),
+        produtores: dono(produtores),
+        variedades: dono(variedades),
+        armazens: dono(armazens),
+        caminhoes: dono(caminhoes),
+        talhoes: dono(talhoes),
+        cargas: dono(cargas),
+        estoque_armazem: dono(estoque_armazem),
+        movimento_estoque: dono(movimento_estoque),
+        venda_grao: dono(venda_grao)
+      }
+    }
+    baixarJson(`lgpd-dados-titular-${localDateYmd()}.json`, payload)
+    onNotify('success', 'Arquivo de dados do titular gerado com sucesso.')
+  }
+
+  async function excluirDadosTitular() {
+    const confirmou = window.confirm('Deseja excluir apenas os dados deste usuario (LGPD)?')
+    if (!confirmou) return
+    const confirmouFinal = window.confirm('Confirmacao final: excluir meus dados agora?')
+    if (!confirmouFinal) return
+
+    try {
+      if (supabase) {
+        const client = supabase
+        const limparPorUsuario = async (table: string) => {
+          const { error } = await client.from(table).delete().eq('created_by', user.id)
+          if (error) throw new Error(`${table}: ${error.message}`)
+        }
+        await limparPorUsuario('movimento_estoque')
+        await limparPorUsuario('venda_grao')
+        await limparPorUsuario('estoque_armazem')
+        await limparPorUsuario('cargas')
+        await limparPorUsuario('talhoes')
+        await limparPorUsuario('caminhoes')
+        await limparPorUsuario('variedades')
+        await limparPorUsuario('produtores')
+        await limparPorUsuario('propriedades')
+        await limparPorUsuario('armazens')
+      }
+
+      const purgeLocalByUser = async <T extends { id: string; created_by: string }>(rows: T[], remove: (id: string) => Promise<void>) => {
+        for (const row of rows) {
+          if (row.created_by === user.id) await remove(row.id)
+        }
+      }
+
+      await purgeLocalByUser(await db.movimento_estoque.toArray(), (id) => db.movimento_estoque.delete(id))
+      await purgeLocalByUser(await db.venda_grao.toArray(), (id) => db.venda_grao.delete(id))
+      await purgeLocalByUser(await db.estoque_armazem.toArray(), (id) => db.estoque_armazem.delete(id))
+      await purgeLocalByUser(await db.cargas.toArray(), (id) => db.cargas.delete(id))
+      await purgeLocalByUser(await db.talhoes.toArray(), (id) => db.talhoes.delete(id))
+      await purgeLocalByUser(await db.caminhoes.toArray(), (id) => db.caminhoes.delete(id))
+      await purgeLocalByUser(await db.variedades.toArray(), (id) => db.variedades.delete(id))
+      await purgeLocalByUser(await db.produtores.toArray(), (id) => db.produtores.delete(id))
+      await purgeLocalByUser(await db.propriedades.toArray(), (id) => db.propriedades.delete(id))
+      await purgeLocalByUser(await db.armazens.toArray(), (id) => db.armazens.delete(id))
+
+      await db.pending_ops.clear()
+      onRefresh()
+      onNotify('success', 'Dados do titular excluidos com sucesso.')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'erro desconhecido'
+      onNotify('error', `Falha ao excluir dados do titular: ${msg}`)
+    }
+  }
+
+  async function aplicarRetencao() {
+    const dias = Number(retencaoDias)
+    if (!Number.isFinite(dias) || dias < 30) {
+      onNotify('error', 'Retencao invalida. Use no minimo 30 dias.')
+      return
+    }
+    localStorage.setItem(`lgpd_retention_days_${user.id}`, String(dias))
+    const limite = new Date()
+    limite.setDate(limite.getDate() - dias)
+    const limiteStr = localDateYmd(limite)
+
+    try {
+      if (supabase) {
+        const client = supabase
+        const { error: erroMov } = await client.from('movimento_estoque').delete().lt('created_at', `${limiteStr}T00:00:00.000Z`)
+        if (erroMov) throw new Error(`movimento_estoque: ${erroMov.message}`)
+        const { error: erroVendas } = await client.from('venda_grao').delete().lt('data', limiteStr)
+        if (erroVendas) throw new Error(`venda_grao: ${erroVendas.message}`)
+        const { error: erroCargas } = await client.from('cargas').delete().lt('data', limiteStr)
+        if (erroCargas) throw new Error(`cargas: ${erroCargas.message}`)
+      }
+
+      const movimentos = await db.movimento_estoque.toArray()
+      for (const m of movimentos) {
+        if (m.created_at.slice(0, 10) < limiteStr) await db.movimento_estoque.delete(m.id)
+      }
+      const vendas = await db.venda_grao.toArray()
+      for (const v of vendas) {
+        if (v.data < limiteStr) await db.venda_grao.delete(v.id)
+      }
+      const cargas = await db.cargas.toArray()
+      for (const c of cargas) {
+        if (c.data < limiteStr) await db.cargas.delete(c.id)
+      }
+      await db.pending_ops.clear()
+      onRefresh()
+      onNotify('success', `Retencao aplicada. Registros anteriores a ${limiteStr} foram removidos.`)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'erro desconhecido'
+      onNotify('error', `Falha ao aplicar retencao: ${msg}`)
+    }
+  }
+
+  async function gerarRelatorioLgpd() {
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+      db.propriedades.count(),
+      db.produtores.count(),
+      db.variedades.count(),
+      db.armazens.count(),
+      db.caminhoes.count(),
+      db.talhoes.count(),
+      db.cargas.count(),
+      db.estoque_armazem.count(),
+      db.movimento_estoque.count(),
+      db.venda_grao.count()
+    ])
+    const payload = {
+      gerado_em: nowIso(),
+      controlador: user.email,
+      canal_titular: lgpdCanal || user.email,
+      retencao_dias: Number(retencaoDias),
+      bases_legais_recomendadas: [
+        'Execucao de contrato e procedimentos preliminares',
+        'Legitimo interesse para operacao e seguranca',
+        'Cumprimento de obrigacao legal/regulatoria quando aplicavel'
+      ],
+      inventario_tabelas: {
+        propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao
+      },
+      direitos_titular_habilitados: [
+        'Acesso aos dados (exportacao LGPD)',
+        'Exclusao dos dados do titular',
+        'Canal de atendimento ao titular'
+      ]
+    }
+    baixarJson(`lgpd-relatorio-tratamento-${localDateYmd()}.json`, payload)
+    onNotify('success', 'Relatorio LGPD gerado com sucesso.')
   }
 
   async function importarBackup(event: React.ChangeEvent<HTMLInputElement>) {
@@ -369,6 +567,38 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
         <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
+
+      <h3>LGPD e Privacidade</h3>
+      <p className="muted">
+        Este modulo registra operacoes da colheita e oferece acoes praticas de privacidade para o titular dos dados.
+      </p>
+      <div className="grid">
+        <input
+          placeholder="Canal de atendimento LGPD (email ou telefone)"
+          value={lgpdCanal}
+          onChange={(e) => setLgpdCanal(e.target.value)}
+        />
+        <input
+          type="number"
+          min="30"
+          step="1"
+          placeholder="Retencao em dias"
+          value={retencaoDias}
+          onChange={(e) => setRetencaoDias(e.target.value)}
+        />
+      </div>
+      <div className="actions">
+        <button onClick={salvarCanalLgpd}>Salvar configuracao LGPD</button>
+        <button onClick={() => void exportarDadosTitular()}>Exportar meus dados (LGPD)</button>
+        <button onClick={() => void excluirDadosTitular()}>Excluir meus dados (LGPD)</button>
+        <button onClick={() => void aplicarRetencao()}>Aplicar retencao</button>
+        <button onClick={() => void gerarRelatorioLgpd()}>Gerar relatorio LGPD</button>
+      </div>
+      <ul>
+        <li>Canal do titular: {lgpdCanal || user.email}</li>
+        <li>Direitos operacionais ativos: acesso/exportacao, exclusao e contato do titular.</li>
+        <li>Boas praticas aplicadas: minimizacao de dados, autenticacao e trilha de auditoria por created_at/updated_at.</li>
+      </ul>
     </section>
   )
 }
