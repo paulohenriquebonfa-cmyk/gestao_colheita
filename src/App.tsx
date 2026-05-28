@@ -1652,6 +1652,19 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     return true
   })
 
+  const nomePropriedade = new Map(((refs.propriedades as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
+  const nomeTalhao = new Map(((refs.talhoes as Talhao[]) ?? []).map((i) => [i.id, i.nome]))
+  const nomeProdutor = new Map(((refs.produtores as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
+  const nomeVariedade = new Map(((refs.variedades as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
+  const nomeArmazem = new Map(((refs.armazens as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
+
+  const statusCarga: Record<Carga['sync_status'], string> = {
+    local_only: 'Somente neste aparelho',
+    pending_sync: 'Pendente de sincronizacao',
+    synced: 'Sincronizado',
+    sync_error: 'Erro de sincronizacao'
+  }
+
   function iniciarEdicao(c: Carga) {
     setEditId(c.id)
     setEditData(c.data)
@@ -1811,7 +1824,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | {c.placa} | liquido {c.peso_liquido_kg.toFixed(2)} kg | bruto {c.peso_bruto_kg.toFixed(2)} kg | {c.sync_status}
+            {c.data} | Placa: {c.placa} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusCarga[c.sync_status]}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>
