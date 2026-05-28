@@ -327,6 +327,18 @@ async function queueOp(table: string, recordId: string, payload: unknown) {
   })
 }
 
+async function queueDeleteOp(table: string, recordId: string) {
+  await db.pending_ops.put({
+    id: makeId(),
+    table,
+    record_id: recordId,
+    op: 'delete',
+    payload: { id: recordId },
+    updated_at: nowIso(),
+    retries: 0
+  })
+}
+
 async function getOrCreateEstoque(armazemId: string, userId: string) {
   const existing = await db.estoque_armazem.where('armazem_id').equals(armazemId).first()
   if (existing) return existing
@@ -550,6 +562,7 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       if (tipo === 'talhoes') {
         await db.talhoes.delete(item.id)
         await db.pending_ops.where('record_id').equals(item.id).delete()
+        await queueDeleteOp('talhoes', item.id)
         setLista(await db.talhoes.toArray())
       } else {
         const tableMap: Record<string, { delete: (id: string) => Promise<void>; toArray: () => Promise<BaseEntity[]> }> = {
@@ -563,6 +576,7 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
         if (!table) return
         await table.delete(item.id)
         await db.pending_ops.where('record_id').equals(item.id).delete()
+        await queueDeleteOp(tipo, item.id)
         setLista(await table.toArray())
       }
       if (editId === item.id) setEditId('')
@@ -1741,6 +1755,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     const existing = await db.cargas.get(cargaId)
     await db.cargas.delete(cargaId)
     await db.pending_ops.where('record_id').equals(cargaId).delete()
+    await queueDeleteOp('cargas', cargaId)
     if (existing) {
       await aplicarSaldoEstoque(userId, existing.armazem_id, -existing.sacas)
       await registrarMovimentoEstoque({

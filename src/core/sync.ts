@@ -9,6 +9,18 @@ async function pushOp(op: PendingOp) {
   if (!TABLES.includes(op.table as (typeof TABLES)[number])) return true
 
   const table = op.table as (typeof TABLES)[number]
+  if (op.op === 'delete') {
+    const { error: delError } = await supabase.from(table).delete().eq('id', op.record_id)
+    if (delError) {
+      await db.pending_ops.update(op.id, {
+        retries: op.retries + 1,
+        error: delError.message
+      })
+      return false
+    }
+    await db.pending_ops.delete(op.id)
+    return true
+  }
   if (table === 'cargas') {
     const carga = op.payload as Carga
     const propriedade = await db.propriedades.get(carga.propriedade_id)
