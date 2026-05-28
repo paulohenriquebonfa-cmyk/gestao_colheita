@@ -283,8 +283,22 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
       if (supabase) {
         const client = supabase
         const limparTabelaNuvem = async (table: string) => {
+          const { count: beforeCount, error: beforeError } = await client
+            .from(table)
+            .select('id', { count: 'exact', head: true })
+          if (beforeError) throw new Error(`${table}: ${beforeError.message}`)
+          if (!beforeCount || beforeCount === 0) return
+
           const { error } = await client.from(table).delete().not('id', 'is', null)
           if (error) throw new Error(`${table}: ${error.message}`)
+
+          const { count: afterCount, error: afterError } = await client
+            .from(table)
+            .select('id', { count: 'exact', head: true })
+          if (afterError) throw new Error(`${table}: ${afterError.message}`)
+          if ((afterCount ?? 0) > 0) {
+            throw new Error(`${table}: ainda restam ${afterCount} registro(s) na nuvem`)
+          }
         }
 
         await limparTabelaNuvem('movimento_estoque')
