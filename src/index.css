@@ -57,6 +57,7 @@ body {
   gap: 0.5rem;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-start;
 }
 
 .tabs {
@@ -79,6 +80,7 @@ button {
   font-weight: 700;
   line-height: 1.15;
   transition: transform 0.12s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  min-height: 40px;
 }
 
 button:hover {
@@ -135,6 +137,7 @@ select:focus-visible {
 
 input, select {
   width: 100%;
+  min-height: 40px;
   padding: 0.65rem 0.72rem;
   border: 1px solid #acbaae;
   border-radius: 10px;
@@ -181,11 +184,10 @@ input, select {
 }
 
 .panel li {
-  display: flex;
-  gap: 0.65rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.55rem;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   padding: 0.62rem 0.72rem;
   margin-bottom: 0.45rem;
   border: 1px solid #d8dfd5;
@@ -204,6 +206,19 @@ input, select {
 
 .panel li button + button {
   margin-left: 0.35rem;
+}
+
+.row label,
+.grid label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+input[type='checkbox'] {
+  width: auto;
+  min-height: 0;
+  margin: 0;
 }
 
 .panel code {
@@ -313,5 +328,13 @@ label {
 
   .panel h3 {
     font-size: 1.2rem;
+  }
+
+  .panel li {
+    grid-template-columns: 1fr;
+  }
+
+  .panel li button + button {
+    margin-left: 0;
   }
 }
