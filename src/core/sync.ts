@@ -45,12 +45,33 @@ async function pushOp(op: PendingOp) {
   return true
 }
 
+async function pullFromCloud() {
+  if (!supabase) return
+
+  for (const table of TABLES) {
+    const { data, error } = await supabase.from(table).select('*')
+    if (error || !data) continue
+
+    if (table === 'propriedades') await db.propriedades.bulkPut(data as BaseEntity[])
+    else if (table === 'produtores') await db.produtores.bulkPut(data as BaseEntity[])
+    else if (table === 'variedades') await db.variedades.bulkPut(data as BaseEntity[])
+    else if (table === 'armazens') await db.armazens.bulkPut(data as BaseEntity[])
+    else if (table === 'caminhoes') await db.caminhoes.bulkPut(data as BaseEntity[])
+    else if (table === 'talhoes') await db.talhoes.bulkPut(data as never[])
+    else if (table === 'cargas') await db.cargas.bulkPut(data as never[])
+    else if (table === 'estoque_armazem') await db.estoque_armazem.bulkPut(data as never[])
+    else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(data as never[])
+    else if (table === 'venda_grao') await db.venda_grao.bulkPut(data as never[])
+  }
+}
+
 export async function runSync() {
   if (!hasSupabase || !navigator.onLine) return
   const ops = await db.pending_ops.orderBy('updated_at').toArray()
   for (const op of ops) {
     await pushOp(op)
   }
+  await pullFromCloud()
 }
 
 export function installSyncListeners() {
