@@ -281,16 +281,22 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
 
     try {
       if (supabase) {
-        await supabase.from('movimento_estoque').delete().neq('id', '')
-        await supabase.from('venda_grao').delete().neq('id', '')
-        await supabase.from('estoque_armazem').delete().neq('id', '')
-        await supabase.from('cargas').delete().neq('id', '')
-        await supabase.from('talhoes').delete().neq('id', '')
-        await supabase.from('caminhoes').delete().neq('id', '')
-        await supabase.from('variedades').delete().neq('id', '')
-        await supabase.from('produtores').delete().neq('id', '')
-        await supabase.from('propriedades').delete().neq('id', '')
-        await supabase.from('armazens').delete().neq('id', '')
+        const client = supabase
+        const limparTabelaNuvem = async (table: string) => {
+          const { error } = await client.from(table).delete().not('id', 'is', null)
+          if (error) throw new Error(`${table}: ${error.message}`)
+        }
+
+        await limparTabelaNuvem('movimento_estoque')
+        await limparTabelaNuvem('venda_grao')
+        await limparTabelaNuvem('estoque_armazem')
+        await limparTabelaNuvem('cargas')
+        await limparTabelaNuvem('talhoes')
+        await limparTabelaNuvem('caminhoes')
+        await limparTabelaNuvem('variedades')
+        await limparTabelaNuvem('produtores')
+        await limparTabelaNuvem('propriedades')
+        await limparTabelaNuvem('armazens')
       }
 
       await db.pending_ops.clear()
@@ -307,8 +313,9 @@ function AssistenteConfiguracao({ onNotify }: { onNotify: (type: NoticeType, mes
 
       onNotify('success', 'Todos os dados foram excluidos com sucesso.')
       window.location.reload()
-    } catch {
-      onNotify('error', 'Falha ao excluir todos os dados.')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'erro desconhecido'
+      onNotify('error', `Falha ao excluir todos os dados: ${msg}`)
     }
   }
 
