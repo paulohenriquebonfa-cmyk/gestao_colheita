@@ -373,7 +373,7 @@ function App() {
       {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
       {tab === 'operacao' && <OperacaoSaas user={session} onNotify={notify} />}
-      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} userRole={userRole} setUserRole={setUserRole} />}
+      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwner(session.email)} />}
       {onboardingOpen && (
         <OnboardingPiloto
           user={session}
@@ -393,13 +393,15 @@ function AssistenteConfiguracao({
   user,
   onRefresh,
   userRole,
-  setUserRole
+  setUserRole,
+  isOwnerUser
 }: {
   onNotify: (type: NoticeType, message: string) => void
   user: UserSession
   onRefresh: () => void
   userRole: UserRole
   setUserRole: (role: UserRole) => void
+  isOwnerUser: boolean
 }) {
   const conectado = hasSupabase
   const [backupInfo, setBackupInfo] = useState('')
@@ -837,6 +839,13 @@ function AssistenteConfiguracao({
       {conectado && (
         <p className="info">Configuracao online ativa. Login e sincronizacao entre dispositivos estao prontos para uso.</p>
       )}
+      {!isOwnerUser && (
+        <p className="warning">
+          Conta convidada: configuracoes administrativas ficam visiveis apenas para o dono do sistema.
+        </p>
+      )}
+      {isOwnerUser && (
+        <>
       <h3>Configuracao do Piloto Gratuito</h3>
       <div className="grid">
         <label>
@@ -881,6 +890,8 @@ function AssistenteConfiguracao({
           <option value="leitura">Leitura (somente consulta)</option>
         </select>
       </div>
+      </>
+      )}
       <p className="muted">Ultima sincronizacao com sucesso: {lastSyncSuccess || 'ainda nao registrada'}</p>
       <h3>Saude da Sincronizacao</h3>
       <ul>
@@ -890,6 +901,8 @@ function AssistenteConfiguracao({
         ))}
       </ul>
 
+      {isOwnerUser && (
+        <>
       <h3>LGPD e Privacidade</h3>
       <p className="muted">
         Este modulo registra operacoes da colheita e oferece acoes praticas de privacidade para o titular dos dados.
@@ -922,6 +935,8 @@ function AssistenteConfiguracao({
         <li>Boas praticas aplicadas: minimizacao de dados, autenticacao e trilha de auditoria por created_at/updated_at.</li>
         <li>Documentos comerciais/LGPD no projeto: docs/TERMOS_DE_USO.md, docs/POLITICA_DE_PRIVACIDADE.md e docs/DPA_MODELO.md.</li>
       </ul>
+      </>
+      )}
     </section>
   )
 }
