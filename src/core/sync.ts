@@ -84,6 +84,37 @@ async function pushOp(op: PendingOp) {
     ? normalizePayloadForCloud(table, { ...payload, sync_status: 'synced' })
     : payload
 
+  if (table === 'pilot_participantes') {
+    const { data: updatedRows, error: updateError } = await supabase
+      .from(table)
+      .update(payloadToSend as never)
+      .eq('id', op.record_id)
+      .select('id')
+
+    if (updateError) {
+      await db.pending_ops.update(op.id, {
+        retries: op.retries + 1,
+        error: updateError.message
+      })
+      return false
+    }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      const { error: insertError } = await supabase.from(table).insert(payloadToSend as never)
+      if (insertError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: insertError.message
+        })
+        return false
+      }
+    }
+
+    await db.pilot_participantes.update(op.record_id, { sync_status: 'synced' })
+    await db.pending_ops.delete(op.id)
+    return true
+  }
+
   const { error } = await supabase.from(table).upsert(payloadToSend as never, { onConflict: 'id' })
 
   if (error) {
