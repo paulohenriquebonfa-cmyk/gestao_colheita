@@ -128,6 +128,21 @@ async function pullFromCloud() {
   if (!supabase) return
 
   const pullErrors: string[] = []
+  const pulledData: Record<(typeof TABLES)[number], Array<Record<string, unknown>>> = {
+    propriedades: [],
+    produtores: [],
+    variedades: [],
+    armazens: [],
+    caminhoes: [],
+    talhoes: [],
+    cargas: [],
+    estoque_armazem: [],
+    movimento_estoque: [],
+    venda_grao: [],
+    pilot_participantes: [],
+    feedback_items: []
+  }
+
   for (const table of TABLES) {
     const { data, error } = await supabase.from(table).select('*')
     if (error || !data) {
@@ -135,25 +150,38 @@ async function pullFromCloud() {
       continue
     }
 
-    const normalized = (data as Array<Record<string, unknown>>).map((row) => ({ ...row, sync_status: 'synced' }))
-
-    if (table === 'propriedades') await db.propriedades.bulkPut(normalized as BaseEntity[])
-    else if (table === 'produtores') await db.produtores.bulkPut(normalized as BaseEntity[])
-    else if (table === 'variedades') await db.variedades.bulkPut(normalized as BaseEntity[])
-    else if (table === 'armazens') await db.armazens.bulkPut(normalized as BaseEntity[])
-    else if (table === 'caminhoes') await db.caminhoes.bulkPut(normalized as BaseEntity[])
-    else if (table === 'talhoes') await db.talhoes.bulkPut(normalized as never[])
-    else if (table === 'cargas') await db.cargas.bulkPut(normalized as never[])
-    else if (table === 'estoque_armazem') await db.estoque_armazem.bulkPut(normalized as never[])
-    else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(normalized as never[])
-    else if (table === 'venda_grao') await db.venda_grao.bulkPut(normalized as never[])
-    else if (table === 'pilot_participantes') await db.pilot_participantes.bulkPut(normalized as never[])
-    else if (table === 'feedback_items') await db.feedback_items.bulkPut(normalized as never[])
+    pulledData[table] = (data as Array<Record<string, unknown>>).map((row) => ({ ...row, sync_status: 'synced' }))
   }
 
   if (pullErrors.length > 0) {
     throw new Error(`Falha ao baixar dados da nuvem: ${pullErrors.join(' | ')}`)
   }
+
+  await db.propriedades.clear()
+  await db.produtores.clear()
+  await db.variedades.clear()
+  await db.armazens.clear()
+  await db.caminhoes.clear()
+  await db.talhoes.clear()
+  await db.cargas.clear()
+  await db.estoque_armazem.clear()
+  await db.movimento_estoque.clear()
+  await db.venda_grao.clear()
+  await db.pilot_participantes.clear()
+  await db.feedback_items.clear()
+
+  await db.propriedades.bulkPut(pulledData.propriedades as unknown as BaseEntity[])
+  await db.produtores.bulkPut(pulledData.produtores as unknown as BaseEntity[])
+  await db.variedades.bulkPut(pulledData.variedades as unknown as BaseEntity[])
+  await db.armazens.bulkPut(pulledData.armazens as unknown as BaseEntity[])
+  await db.caminhoes.bulkPut(pulledData.caminhoes as unknown as BaseEntity[])
+  await db.talhoes.bulkPut(pulledData.talhoes as never[])
+  await db.cargas.bulkPut(pulledData.cargas as never[])
+  await db.estoque_armazem.bulkPut(pulledData.estoque_armazem as never[])
+  await db.movimento_estoque.bulkPut(pulledData.movimento_estoque as never[])
+  await db.venda_grao.bulkPut(pulledData.venda_grao as never[])
+  await db.pilot_participantes.bulkPut(pulledData.pilot_participantes as never[])
+  await db.feedback_items.bulkPut(pulledData.feedback_items as never[])
 }
 
 export async function runSync() {

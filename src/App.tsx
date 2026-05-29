@@ -78,8 +78,18 @@ function App() {
   const [pilotConfig, setPilotConfig] = useState<PilotConfig>(() => loadPilotConfigFromStorage())
 
   const isOwner = useCallback((emailValue: string) => {
-    return !pilotConfig.ownerEmail || pilotConfig.ownerEmail === emailValue
+    const owner = pilotConfig.ownerEmail.trim().toLowerCase()
+    const current = emailValue.trim().toLowerCase()
+    return !owner || owner === current
   }, [pilotConfig.ownerEmail])
+
+  const resolveRole = useCallback((userId: string, emailValue: string): UserRole => {
+    const roleKey = `user_role_${userId}`
+    const savedRole = localStorage.getItem(roleKey) as UserRole | null
+    if (!savedRole) return isOwner(emailValue) ? 'proprietario' : 'operador'
+    if (!isOwner(emailValue) && savedRole === 'proprietario') return 'operador'
+    return savedRole
+  }, [isOwner])
 
   const validarConvite = useCallback(async (emailValue: string) => {
     if (!pilotConfig.ativo) return true
@@ -139,9 +149,7 @@ function App() {
         }
         setSession(sess)
         void registrarAuditoria(sess.id, 'sessao_restaurada', 'Sessao Supabase restaurada')
-        const roleKey = `user_role_${sess.id}`
-        const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
-        setUserRole(savedRole)
+        setUserRole(resolveRole(sess.id, sess.email))
         const onboardKey = `onboarding_done_${sess.id}`
         if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
         void runSync()
@@ -153,7 +161,7 @@ function App() {
         })
       }
     })
-  }, [pilotConfig, validarConvite])
+  }, [pilotConfig, resolveRole, validarConvite])
 
   const triggerRefresh = () => setRefreshTick((v) => v + 1)
   const notify = (type: NoticeType, message: string) => {
@@ -194,9 +202,7 @@ function App() {
         await db.pilot_participantes.put(updated)
         await queueOp('pilot_participantes', updated.id, updated)
       }
-      const roleKey = `user_role_${data.user.id}`
-      const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
-      setUserRole(savedRole)
+      setUserRole(resolveRole(data.user.id, data.user.email ?? email))
       const onboardKey = `onboarding_done_${data.user.id}`
       if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
       await runSync()
@@ -221,9 +227,7 @@ function App() {
     }
     setSession(sess)
     await registrarAuditoria(sess.id, 'login_local', 'Login em modo local sem Supabase')
-    const roleKey = `user_role_${sess.id}`
-    const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
-    setUserRole(savedRole)
+    setUserRole(resolveRole(sess.id, sess.email))
     const onboardKey = `onboarding_done_${sess.id}`
     if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
   }
