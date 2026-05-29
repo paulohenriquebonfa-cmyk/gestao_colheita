@@ -94,8 +94,26 @@ function App() {
   const validarConvite = useCallback(async (emailValue: string) => {
     if (!pilotConfig.ativo) return true
     if (isOwner(emailValue)) return true
-    const localInvite = await db.pilot_participantes.where('email').equals(emailValue.toLowerCase()).first()
-    return Boolean(localInvite && localInvite.status === 'ativo')
+    const normalized = emailValue.trim().toLowerCase()
+    const localInvite = await db.pilot_participantes.where('email').equals(normalized).first()
+    if (localInvite?.status === 'ativo') return true
+
+    if (hasSupabase && supabase && navigator.onLine) {
+      const { data, error } = await supabase
+        .from('pilot_participantes')
+        .select('*')
+        .eq('email', normalized)
+        .eq('status', 'ativo')
+        .limit(1)
+
+      if (!error && data && data.length > 0) {
+        const cloudInvite = { ...(data[0] as PilotParticipant), sync_status: 'synced' as const }
+        await db.pilot_participantes.put(cloudInvite)
+        return true
+      }
+    }
+
+    return false
   }, [isOwner, pilotConfig.ativo])
 
   useEffect(() => {
