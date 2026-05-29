@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { db } from './core/db'
 import { hasSupabase, supabase } from './core/supabase'
@@ -13,6 +13,7 @@ type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'fr
 type UserSession = { id: string; email: string }
 type NoticeType = 'success' | 'error'
 type Notice = { type: NoticeType; message: string } | null
+type PilotConfig = { ativo: boolean; inicio: string; fim: string; ownerEmail: string }
 
 const initialFilters: Filters = {}
 
@@ -37,6 +38,32 @@ async function registrarAuditoria(actorUserId: string, action: string, details?:
   await db.audit_logs.put(row)
 }
 
+function buildDefaultPilotConfig(): PilotConfig {
+  return {
+    ativo: true,
+    inicio: localDateYmd(),
+    fim: localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))),
+    ownerEmail: ''
+  }
+}
+
+function loadPilotConfigFromStorage(defaultOwnerEmail = ''): PilotConfig {
+  const fallback = { ...buildDefaultPilotConfig(), ownerEmail: defaultOwnerEmail }
+  const raw = localStorage.getItem('pilot_config')
+  if (!raw) return fallback
+  try {
+    const parsed = JSON.parse(raw) as Partial<PilotConfig>
+    return {
+      ativo: typeof parsed.ativo === 'boolean' ? parsed.ativo : fallback.ativo,
+      inicio: parsed.inicio || fallback.inicio,
+      fim: parsed.fim || fallback.fim,
+      ownerEmail: parsed.ownerEmail || fallback.ownerEmail
+    }
+  } catch {
+    return fallback
+  }
+}
+
 function App() {
   const [session, setSession] = useState<UserSession | null>(null)
   const [email, setEmail] = useState('')
@@ -48,37 +75,21 @@ function App() {
   const [syncDebug, setSyncDebug] = useState('')
   const [userRole, setUserRole] = useState<UserRole>('proprietario')
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const [pilotConfig, setPilotConfig] = useState<{ ativo: boolean; inicio: string; fim: string; ownerEmail: string }>({
-    ativo: true,
-    inicio: localDateYmd(),
-    fim: localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))),
-    ownerEmail: ''
-  })
+  const [pilotConfig, setPilotConfig] = useState<PilotConfig>(() => loadPilotConfigFromStorage())
 
-  function loadPilotConfig() {
-    const raw = localStorage.getItem('pilot_config')
-    if (!raw) return
-    try {
-      setPilotConfig(JSON.parse(raw) as { ativo: boolean; inicio: string; fim: string; ownerEmail: string })
-    } catch {
-      // ignore malformed local data
-    }
-  }
-
-  function isOwner(emailValue: string) {
+  const isOwner = useCallback((emailValue: string) => {
     return !pilotConfig.ownerEmail || pilotConfig.ownerEmail === emailValue
-  }
+  }, [pilotConfig.ownerEmail])
 
-  async function validarConvite(emailValue: string) {
+  const validarConvite = useCallback(async (emailValue: string) => {
     if (!pilotConfig.ativo) return true
     if (isOwner(emailValue)) return true
     const localInvite = await db.pilot_participantes.where('email').equals(emailValue.toLowerCase()).first()
     return Boolean(localInvite && localInvite.status === 'ativo')
-  }
+  }, [isOwner, pilotConfig.ativo])
 
   useEffect(() => {
     installSyncListeners()
-    loadPilotConfig()
     void runSync()
     void bootstrapDemoData()
   }, [])
@@ -142,7 +153,7 @@ function App() {
         })
       }
     })
-  }, [pilotConfig])
+  }, [pilotConfig, validarConvite])
 
   const triggerRefresh = () => setRefreshTick((v) => v + 1)
   const notify = (type: NoticeType, message: string) => {
@@ -354,39 +365,15 @@ function AssistenteConfiguracao({
 }) {
   const conectado = hasSupabase
   const [backupInfo, setBackupInfo] = useState('')
-  const [lgpdCanal, setLgpdCanal] = useState('')
-  const [retencaoDias, setRetencaoDias] = useState('730')
+  const [lgpdCanal, setLgpdCanal] = useState(() => localStorage.getItem(`lgpd_channel_${user.id}`) || user.email)
+  const [retencaoDias, setRetencaoDias] = useState(() => localStorage.getItem(`lgpd_retention_days_${user.id}`) || '730')
   const [syncOpsByTable, setSyncOpsByTable] = useState<Record<string, number>>({})
-  const [lastSyncSuccess, setLastSyncSuccess] = useState('')
-  const [pilotAtivo, setPilotAtivo] = useState(true)
-  const [pilotInicio, setPilotInicio] = useState(localDateYmd())
-  const [pilotFim, setPilotFim] = useState(localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))))
-  const [pilotOwnerEmail, setPilotOwnerEmail] = useState(user.email)
-
-  useEffect(() => {
-    const canalKey = `lgpd_channel_${user.id}`
-    const retencaoKey = `lgpd_retention_days_${user.id}`
-    const canalSalvo = localStorage.getItem(canalKey)
-    const retencaoSalva = localStorage.getItem(retencaoKey)
-    setLgpdCanal(canalSalvo || user.email)
-    if (retencaoSalva) setRetencaoDias(retencaoSalva)
-    const lastSync = localStorage.getItem(`last_sync_success_${user.id}`) ?? ''
-    setLastSyncSuccess(lastSync)
-    const pilotRaw = localStorage.getItem('pilot_config')
-    if (pilotRaw) {
-      try {
-        const cfg = JSON.parse(pilotRaw) as { ativo: boolean; inicio: string; fim: string; ownerEmail: string }
-        setPilotAtivo(cfg.ativo)
-        setPilotInicio(cfg.inicio)
-        setPilotFim(cfg.fim)
-        setPilotOwnerEmail(cfg.ownerEmail || user.email)
-      } catch {
-        setPilotOwnerEmail(user.email)
-      }
-    } else {
-      setPilotOwnerEmail(user.email)
-    }
-  }, [user.id, user.email])
+  const initialPilotConfig = loadPilotConfigFromStorage(user.email)
+  const [pilotAtivo, setPilotAtivo] = useState(initialPilotConfig.ativo)
+  const [pilotInicio, setPilotInicio] = useState(initialPilotConfig.inicio)
+  const [pilotFim, setPilotFim] = useState(initialPilotConfig.fim)
+  const [pilotOwnerEmail, setPilotOwnerEmail] = useState(initialPilotConfig.ownerEmail || user.email)
+  const lastSyncSuccess = localStorage.getItem(`last_sync_success_${user.id}`) ?? ''
 
   useEffect(() => {
     void db.pending_ops.toArray().then((ops) => {
@@ -394,7 +381,7 @@ function AssistenteConfiguracao({
       for (const op of ops) grouped[op.table] = (grouped[op.table] ?? 0) + 1
       setSyncOpsByTable(grouped)
     })
-  }, [lastSyncSuccess, user.id])
+  }, [user.id])
 
   function salvarConfigPiloto() {
     const cfg = {
