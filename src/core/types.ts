@@ -107,8 +107,8 @@ export interface PilotParticipant {
   nome: string
   status: 'ativo' | 'inativo'
   data_entrada: string
-  ultimo_acesso?: string
-  ultimo_sync?: string
+  ultimo_acesso?: string | null
+  ultimo_sync?: string | null
   created_at: string
   updated_at: string
   created_by: string

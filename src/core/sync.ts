@@ -4,6 +4,15 @@ import type { BaseEntity, Carga, PendingOp, Talhao } from './types'
 
 const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items'] as const
 
+function normalizePayloadForCloud(table: string, payload: Record<string, unknown>) {
+  if (table !== 'pilot_participantes') return payload
+  return {
+    ...payload,
+    ultimo_acesso: payload.ultimo_acesso === '' ? null : payload.ultimo_acesso,
+    ultimo_sync: payload.ultimo_sync === '' ? null : payload.ultimo_sync
+  }
+}
+
 async function pushOp(op: PendingOp) {
   if (!supabase) return false
   if (!TABLES.includes(op.table as (typeof TABLES)[number])) return true
@@ -72,7 +81,7 @@ async function pushOp(op: PendingOp) {
 
   const payload = op.payload as Record<string, unknown>
   const payloadToSend = payload && typeof payload === 'object' && 'sync_status' in payload
-    ? { ...payload, sync_status: 'synced' }
+    ? normalizePayloadForCloud(table, { ...payload, sync_status: 'synced' })
     : payload
 
   const { error } = await supabase.from(table).upsert(payloadToSend as never, { onConflict: 'id' })
