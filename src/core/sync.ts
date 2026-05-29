@@ -222,6 +222,13 @@ export async function runSync() {
     window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason } }))
     return
   }
+  if (supabase) {
+    const { data } = await supabase.auth.getSession()
+    if (!data.session) {
+      window.dispatchEvent(new CustomEvent('colheita-sync-complete', { detail: { ok: false, reason: 'unauthenticated' } }))
+      return
+    }
+  }
   if (!navigator.onLine) {
     const reason = 'offline'
     window.dispatchEvent(new CustomEvent('colheita-sync-error', { detail: { reason, message: 'Sem conexao com a internet.' } }))

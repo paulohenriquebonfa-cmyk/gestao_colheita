@@ -101,7 +101,7 @@ function App() {
   useEffect(() => {
     installSyncListeners()
     void runSync()
-    void bootstrapDemoData()
+    if (!hasSupabase) void bootstrapDemoData()
   }, [])
 
   useEffect(() => {
@@ -136,6 +136,20 @@ function App() {
     }
   }, [])
 
+  const limparPendenciasLegadas = useCallback(async (userId: string) => {
+    const ops = await db.pending_ops.toArray()
+    for (const op of ops) {
+      if (op.op !== 'upsert' || !op.payload || typeof op.payload !== 'object') continue
+      const payload = op.payload as Record<string, unknown>
+      const createdBy = String(payload.created_by ?? '')
+      const updatedBy = String(payload.updated_by ?? '')
+      const legado = createdBy === 'seed' || createdBy.startsWith('local-') || updatedBy === 'seed' || updatedBy.startsWith('local-')
+      if (!legado) continue
+      const fixed = { ...payload, created_by: userId, updated_by: userId }
+      await db.pending_ops.update(op.id, { payload: fixed, updated_at: nowIso(), retries: 0, error: undefined })
+    }
+  }, [])
+
   useEffect(() => {
     if (!hasSupabase || !supabase) return
     void supabase.auth.getSession().then(({ data }) => {
@@ -152,6 +166,7 @@ function App() {
         setUserRole(resolveRole(sess.id, sess.email))
         const onboardKey = `onboarding_done_${sess.id}`
         if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
+        void limparPendenciasLegadas(sess.id)
         void runSync()
         void validarConvite(sess.email).then((ok) => {
           if (!ok) {
@@ -161,7 +176,7 @@ function App() {
         })
       }
     })
-  }, [pilotConfig, resolveRole, validarConvite])
+  }, [limparPendenciasLegadas, pilotConfig, resolveRole, validarConvite])
 
   const triggerRefresh = () => setRefreshTick((v) => v + 1)
   const notify = (type: NoticeType, message: string) => {
@@ -205,6 +220,7 @@ function App() {
       setUserRole(resolveRole(data.user.id, data.user.email ?? email))
       const onboardKey = `onboarding_done_${data.user.id}`
       if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
+      await limparPendenciasLegadas(data.user.id)
       await runSync()
       return
     }
