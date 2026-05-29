@@ -11,6 +11,39 @@ export const localDateYmd = (d = new Date()) => {
   return `${year}-${month}-${day}`
 }
 
+export const localYmdFromValue = (value?: string | null) => {
+  if (!value) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return localDateYmd(d)
+}
+
+export const formatDateBr = (value?: string | null) => {
+  if (!value) return '-'
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-')
+    return `${d}/${m}/${y}`
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date)
+}
+
+export const formatDateTimeBr = (value?: string | null) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date)
+}
+
 export const parsePtBrNumber = (value: string) => {
   const normalized = value.replace(/\./g, '').replace(',', '.').trim()
   const n = Number(normalized)

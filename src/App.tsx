@@ -5,7 +5,7 @@ import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { validarCarga } from './core/validation'
-import { formatPtBrNumber, localDateYmd, makeId, nowIso, parsePtBrNumber } from './core/utils'
+import { formatDateBr, formatDateTimeBr, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import type { AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
@@ -989,7 +989,7 @@ function AssistenteConfiguracao({
       </div>
       </>
       )}
-      <p className="muted">Ultima sincronizacao com sucesso: {lastSyncSuccess || 'ainda nao registrada'}</p>
+      <p className="muted">Ultima sincronizacao com sucesso: {lastSyncSuccess ? formatDateTimeBr(lastSyncSuccess) : 'ainda nao registrada'}</p>
       <h3>Saude da Sincronizacao</h3>
       <ul>
         {Object.keys(syncOpsByTable).length === 0 && <li>Sem pendencias na fila local.</li>}
@@ -1206,7 +1206,7 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
         {participantes.length === 0 && <li>Nenhum participante convidado.</li>}
         {participantes.map((p) => (
           <li key={p.id}>
-            {p.nome} | {p.email} | status: {p.status} | entrada: {p.data_entrada} | ultimo acesso: {p.ultimo_acesso || '-'} | ultimo sync: {p.ultimo_sync || '-'}
+            {p.nome} | {p.email} | status: {p.status} | entrada: {formatDateBr(p.data_entrada)} | ultimo acesso: {formatDateTimeBr(p.ultimo_acesso)} | ultimo sync: {formatDateTimeBr(p.ultimo_sync)}
             <select value={p.status} onChange={(e) => void alterarStatusParticipante(p.id, e.target.value as PilotParticipant['status'])}>
               <option value="ativo">Ativo</option>
               <option value="inativo">Inativo</option>
@@ -1225,7 +1225,7 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
       <ul>
         {logs.length === 0 && <li>Nenhum log registrado ainda.</li>}
         {logs.slice(0, 10).map((l) => (
-          <li key={l.id}>{l.created_at} | {l.action} | {l.details ?? '-'}</li>
+          <li key={l.id}>{formatDateTimeBr(l.created_at)} | {l.action} | {l.details ?? '-'}</li>
         ))}
       </ul>
 
@@ -1359,7 +1359,7 @@ function FeedbackPiloto({
         {lista.length === 0 && <li>Nenhum feedback enviado ainda.</li>}
         {lista.map((f) => (
           <li key={f.id}>
-            {f.created_at.slice(0, 10)} | {f.categoria} | prioridade {f.prioridade} | status {f.status} | {f.contexto} | {f.descricao}
+            {formatDateBr(f.created_at)} | {f.categoria} | prioridade {f.prioridade} | status {f.status} | {f.contexto} | {f.descricao}
             {isOwner && (
               <select value={f.status} onChange={(e) => void atualizarStatus(f.id, e.target.value as FeedbackItem['status'])}>
                 <option value="novo">Novo</option>
@@ -2323,7 +2323,7 @@ function ArmazenagemVendas({
 
   const vendasFiltradas = vendas.filter((v) => v.data >= filtroInicio && v.data <= filtroFim)
   const movimentosFiltrados = movimentos.filter((m) => {
-    const d = m.created_at.slice(0, 10)
+    const d = localYmdFromValue(m.created_at)
     return d >= filtroInicio && d <= filtroFim
   })
 
@@ -2348,7 +2348,7 @@ function ArmazenagemVendas({
   function exportarRelatorioCsv() {
     const cab = ['tipo', 'data', 'produtor', 'armazem', 'sacas', 'valor_rs', 'status', 'motivo']
     const vendasRows = vendasFiltradas.map((v) => ['venda', v.data, nomeProdutor.get(v.produtor_id) ?? v.produtor_id, nomeArmazem.get(v.armazem_cliente_id) ?? v.armazem_cliente_id, v.sacas.toFixed(2), v.valor_total.toFixed(2), v.status, ''])
-    const movRows = movimentosFiltrados.map((m) => ['movimento', m.created_at.slice(0, 10), nomeArmazem.get(m.armazem_id) ?? m.armazem_id, m.sacas.toFixed(2), '', m.tipo, m.motivo ?? ''])
+    const movRows = movimentosFiltrados.map((m) => ['movimento', localYmdFromValue(m.created_at), nomeArmazem.get(m.armazem_id) ?? m.armazem_id, m.sacas.toFixed(2), '', m.tipo, m.motivo ?? ''])
     const csv = [cab, ...vendasRows, ...movRows].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
@@ -2488,7 +2488,7 @@ function ArmazenagemVendas({
       <ul>
         {movimentosFiltrados.map((m) => (
           <li key={m.id}>
-            {m.created_at.slice(0, 10)} | {nomeArmazem.get(m.armazem_id) ?? m.armazem_id} | {m.tipo} | {formatPtBrNumber(m.sacas)} sacas | {m.origem}{m.motivo ? ` | motivo: ${m.motivo}` : ''}
+            {formatDateBr(m.created_at)} | {nomeArmazem.get(m.armazem_id) ?? m.armazem_id} | {m.tipo} | {formatPtBrNumber(m.sacas)} sacas | {m.origem}{m.motivo ? ` | motivo: ${m.motivo}` : ''}
           </li>
         ))}
       </ul>
