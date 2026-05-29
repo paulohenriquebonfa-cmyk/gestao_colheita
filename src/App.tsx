@@ -542,8 +542,8 @@ function AssistenteConfiguracao({
     }
   }
 
-  async function exportarDadosTitular() {
-    const dono = (rows: Array<{ created_by: string }>) => rows.filter((r) => r.created_by === user.id)
+  async function coletarDadosDoTitular() {
+    const filtrar = <T extends { created_by: string }>(rows: T[]) => rows.filter((r) => r.created_by === user.id)
     const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
@@ -556,21 +556,118 @@ function AssistenteConfiguracao({
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray()
     ])
+    return {
+      propriedades: filtrar(propriedades),
+      produtores: filtrar(produtores),
+      variedades: filtrar(variedades),
+      armazens: filtrar(armazens),
+      caminhoes: filtrar(caminhoes),
+      talhoes: filtrar(talhoes),
+      cargas: filtrar(cargas),
+      estoque_armazem: filtrar(estoque_armazem),
+      movimento_estoque: filtrar(movimento_estoque),
+      venda_grao: filtrar(venda_grao)
+    }
+  }
+
+  async function exportarBackupPessoal() {
+    const dados = await coletarDadosDoTitular()
+    const payload = {
+      tipo: 'backup_pessoal',
+      titular: { id: user.id, email: user.email },
+      exportado_em: nowIso(),
+      versao: 1,
+      dados
+    }
+    baixarJson(`backup-pessoal-${localDateYmd()}.json`, payload)
+    onNotify('success', 'Backup pessoal exportado com sucesso.')
+  }
+
+  async function importarBackupPessoal(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const raw = await file.text()
+      const json = JSON.parse(raw) as {
+        titular?: { id?: string; email?: string }
+        dados?: {
+          propriedades?: BaseEntity[]
+          produtores?: BaseEntity[]
+          variedades?: BaseEntity[]
+          armazens?: BaseEntity[]
+          caminhoes?: BaseEntity[]
+          talhoes?: Talhao[]
+          cargas?: Carga[]
+          estoque_armazem?: EstoqueArmazem[]
+          movimento_estoque?: MovimentoEstoque[]
+          venda_grao?: VendaGrao[]
+        }
+      }
+      if (!json.dados) {
+        onNotify('error', 'Arquivo invalido para backup pessoal.')
+        return
+      }
+      if (json.titular?.id && json.titular.id !== user.id) {
+        onNotify('error', 'Este backup pertence a outro usuario e nao pode ser importado nesta conta.')
+        return
+      }
+
+      const preparar = <T extends { id: string; created_by: string; updated_by: string; updated_at: string; sync_status: string }>(rows: T[] | undefined): T[] => {
+        if (!rows) return []
+        const now = nowIso()
+        return rows
+          .filter((r) => !json.titular?.id || r.created_by === user.id)
+          .map((r) => ({ ...r, created_by: user.id, updated_by: user.id, updated_at: now, sync_status: 'pending_sync' as const }))
+      }
+
+      const propriedades = preparar(json.dados.propriedades)
+      const produtores = preparar(json.dados.produtores)
+      const variedades = preparar(json.dados.variedades)
+      const armazens = preparar(json.dados.armazens)
+      const caminhoes = preparar(json.dados.caminhoes)
+      const talhoes = preparar(json.dados.talhoes)
+      const cargas = preparar(json.dados.cargas)
+      const estoque = preparar(json.dados.estoque_armazem)
+      const movimentos = preparar(json.dados.movimento_estoque)
+      const vendas = preparar(json.dados.venda_grao)
+
+      await db.propriedades.bulkPut(propriedades)
+      await db.produtores.bulkPut(produtores)
+      await db.variedades.bulkPut(variedades)
+      await db.armazens.bulkPut(armazens)
+      await db.caminhoes.bulkPut(caminhoes)
+      await db.talhoes.bulkPut(talhoes)
+      await db.cargas.bulkPut(cargas)
+      await db.estoque_armazem.bulkPut(estoque)
+      await db.movimento_estoque.bulkPut(movimentos)
+      await db.venda_grao.bulkPut(vendas)
+
+      for (const row of propriedades) await queueOp('propriedades', row.id, row)
+      for (const row of produtores) await queueOp('produtores', row.id, row)
+      for (const row of variedades) await queueOp('variedades', row.id, row)
+      for (const row of armazens) await queueOp('armazens', row.id, row)
+      for (const row of caminhoes) await queueOp('caminhoes', row.id, row)
+      for (const row of talhoes) await queueOp('talhoes', row.id, row)
+      for (const row of cargas) await queueOp('cargas', row.id, row)
+      for (const row of estoque) await queueOp('estoque_armazem', row.id, row)
+      for (const row of movimentos) await queueOp('movimento_estoque', row.id, row)
+      for (const row of vendas) await queueOp('venda_grao', row.id, row)
+
+      onRefresh()
+      onNotify('success', 'Backup pessoal importado com sucesso. Clique em Sincronizar para enviar para nuvem.')
+    } catch {
+      onNotify('error', 'Nao foi possivel importar o backup pessoal. Verifique se o arquivo e valido.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  async function exportarDadosTitular() {
+    const dados = await coletarDadosDoTitular()
     const payload = {
       titular: { id: user.id, email: user.email },
       exportado_em: nowIso(),
-      dados: {
-        propriedades: dono(propriedades),
-        produtores: dono(produtores),
-        variedades: dono(variedades),
-        armazens: dono(armazens),
-        caminhoes: dono(caminhoes),
-        talhoes: dono(talhoes),
-        cargas: dono(cargas),
-        estoque_armazem: dono(estoque_armazem),
-        movimento_estoque: dono(movimento_estoque),
-        venda_grao: dono(venda_grao)
-      }
+      dados
     }
     baixarJson(`lgpd-dados-titular-${localDateYmd()}.json`, payload)
     onNotify('success', 'Arquivo de dados do titular gerado com sucesso.')
@@ -900,6 +997,27 @@ function AssistenteConfiguracao({
           <li key={table}>{table}: {qty} pendencia(s)</li>
         ))}
       </ul>
+
+      {!isOwnerUser && (
+        <>
+      <h3>Backup Pessoal</h3>
+      <p className="muted">Estas opcoes trabalham somente com os dados da sua conta convidada.</p>
+      <div className="actions">
+        <button onClick={() => void exportarBackupPessoal()}>Exportar meus dados (JSON)</button>
+        <label className="file-input-label">
+          Importar meus dados (JSON)
+          <input type="file" accept=".json,application/json" onChange={importarBackupPessoal} />
+        </label>
+      </div>
+
+      <h3>LGPD Pessoal</h3>
+      <p className="muted">Voce pode acessar ou excluir somente os seus proprios dados.</p>
+      <div className="actions">
+        <button onClick={() => void exportarDadosTitular()}>Exportar meus dados (LGPD)</button>
+        <button onClick={() => void excluirDadosTitular()}>Excluir meus dados (LGPD)</button>
+      </div>
+      </>
+      )}
 
       {isOwnerUser && (
         <>
