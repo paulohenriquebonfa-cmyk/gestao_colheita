@@ -91,6 +91,46 @@ export interface PendingOp {
   error?: string
 }
 
+export type UserRole = 'proprietario' | 'operador' | 'leitura'
+
+export interface AuditLog {
+  id: string
+  action: string
+  actor_user_id: string
+  details?: string
+  created_at: string
+}
+
+export interface PilotParticipant {
+  id: string
+  email: string
+  nome: string
+  status: 'ativo' | 'inativo'
+  data_entrada: string
+  ultimo_acesso?: string
+  ultimo_sync?: string
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+  sync_status: SyncStatus
+}
+
+export interface FeedbackItem {
+  id: string
+  categoria: 'erro' | 'usabilidade' | 'nova_funcionalidade' | 'relatorio' | 'outros'
+  prioridade: 'baixa' | 'media' | 'alta'
+  descricao: string
+  contexto: string
+  contato?: string
+  status: 'novo' | 'em_analise' | 'planejado' | 'concluido'
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+  sync_status: SyncStatus
+}
+
 export interface Filters {
   dataInicio?: string
   dataFim?: string

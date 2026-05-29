@@ -2,7 +2,7 @@ import { db } from './db'
 import { hasSupabase, supabase } from './supabase'
 import type { BaseEntity, Carga, PendingOp, Talhao } from './types'
 
-const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao'] as const
+const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items'] as const
 
 async function pushOp(op: PendingOp) {
   if (!supabase) return false
@@ -95,6 +95,10 @@ async function pushOp(op: PendingOp) {
     await db.venda_grao.update(op.record_id, { sync_status: 'synced' })
   } else if (op.table === 'movimento_estoque') {
     await db.movimento_estoque.update(op.record_id, { sync_status: 'synced' })
+  } else if (op.table === 'pilot_participantes') {
+    await db.pilot_participantes.update(op.record_id, { sync_status: 'synced' })
+  } else if (op.table === 'feedback_items') {
+    await db.feedback_items.update(op.record_id, { sync_status: 'synced' })
   } else {
     const tableMap: Record<string, { update: (id: string, data: Partial<BaseEntity>) => Promise<number> }> = {
       propriedades: db.propriedades,
@@ -134,6 +138,8 @@ async function pullFromCloud() {
     else if (table === 'estoque_armazem') await db.estoque_armazem.bulkPut(normalized as never[])
     else if (table === 'movimento_estoque') await db.movimento_estoque.bulkPut(normalized as never[])
     else if (table === 'venda_grao') await db.venda_grao.bulkPut(normalized as never[])
+    else if (table === 'pilot_participantes') await db.pilot_participantes.bulkPut(normalized as never[])
+    else if (table === 'feedback_items') await db.feedback_items.bulkPut(normalized as never[])
   }
 
   if (pullErrors.length > 0) {

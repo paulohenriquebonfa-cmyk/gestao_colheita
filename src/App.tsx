@@ -6,9 +6,9 @@ import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { validarCarga } from './core/validation'
 import { formatPtBrNumber, localDateYmd, makeId, nowIso, parsePtBrNumber } from './core/utils'
-import type { BaseEntity, Carga, EstoqueArmazem, Filters, MovimentoEstoque, Talhao, VendaGrao } from './core/types'
+import type { AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
 
-type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'config'
+type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
 
 type UserSession = { id: string; email: string }
 type NoticeType = 'success' | 'error'
@@ -26,6 +26,17 @@ function placaLegivel(rawPlaca: string, nomeCaminhao?: string) {
   return rawPlaca
 }
 
+async function registrarAuditoria(actorUserId: string, action: string, details?: string) {
+  const row: AuditLog = {
+    id: makeId(),
+    action,
+    actor_user_id: actorUserId,
+    details,
+    created_at: nowIso()
+  }
+  await db.audit_logs.put(row)
+}
+
 function App() {
   const [session, setSession] = useState<UserSession | null>(null)
   const [email, setEmail] = useState('')
@@ -35,9 +46,39 @@ function App() {
   const [refreshTick, setRefreshTick] = useState(0)
   const [notice, setNotice] = useState<Notice>(null)
   const [syncDebug, setSyncDebug] = useState('')
+  const [userRole, setUserRole] = useState<UserRole>('proprietario')
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const [pilotConfig, setPilotConfig] = useState<{ ativo: boolean; inicio: string; fim: string; ownerEmail: string }>({
+    ativo: true,
+    inicio: localDateYmd(),
+    fim: localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))),
+    ownerEmail: ''
+  })
+
+  function loadPilotConfig() {
+    const raw = localStorage.getItem('pilot_config')
+    if (!raw) return
+    try {
+      setPilotConfig(JSON.parse(raw) as { ativo: boolean; inicio: string; fim: string; ownerEmail: string })
+    } catch {
+      // ignore malformed local data
+    }
+  }
+
+  function isOwner(emailValue: string) {
+    return !pilotConfig.ownerEmail || pilotConfig.ownerEmail === emailValue
+  }
+
+  async function validarConvite(emailValue: string) {
+    if (!pilotConfig.ativo) return true
+    if (isOwner(emailValue)) return true
+    const localInvite = await db.pilot_participantes.where('email').equals(emailValue.toLowerCase()).first()
+    return Boolean(localInvite && localInvite.status === 'ativo')
+  }
 
   useEffect(() => {
     installSyncListeners()
+    loadPilotConfig()
     void runSync()
     void bootstrapDemoData()
   }, [])
@@ -51,7 +92,10 @@ function App() {
   useEffect(() => {
     const onSyncError = (evt: Event) => {
       const detail = (evt as CustomEvent<{ message?: string }>).detail
-      if (detail?.message) setSyncDebug(detail.message)
+      if (detail?.message) {
+        setSyncDebug(detail.message)
+        localStorage.setItem('last_sync_error', detail.message)
+      }
     }
     window.addEventListener('colheita-sync-error', onSyncError as EventListener)
     return () => window.removeEventListener('colheita-sync-error', onSyncError as EventListener)
@@ -76,11 +120,29 @@ function App() {
     void supabase.auth.getSession().then(({ data }) => {
       const s = data.session
       if (s?.user) {
-        setSession({ id: s.user.id, email: s.user.email ?? 'usuario' })
+        const sess = { id: s.user.id, email: s.user.email ?? 'usuario' }
+        if (!pilotConfig.ownerEmail && sess.email) {
+          const cfg = { ...pilotConfig, ownerEmail: sess.email }
+          setPilotConfig(cfg)
+          localStorage.setItem('pilot_config', JSON.stringify(cfg))
+        }
+        setSession(sess)
+        void registrarAuditoria(sess.id, 'sessao_restaurada', 'Sessao Supabase restaurada')
+        const roleKey = `user_role_${sess.id}`
+        const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
+        setUserRole(savedRole)
+        const onboardKey = `onboarding_done_${sess.id}`
+        if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
         void runSync()
+        void validarConvite(sess.email).then((ok) => {
+          if (!ok) {
+            setSession(null)
+            setAuthError('Acesso de piloto restrito. Solicite convite ao administrador.')
+          }
+        })
       }
     })
-  }, [])
+  }, [pilotConfig])
 
   const triggerRefresh = () => setRefreshTick((v) => v + 1)
   const notify = (type: NoticeType, message: string) => {
@@ -96,7 +158,36 @@ function App() {
         setAuthError(error?.message ?? 'Falha no login')
         return
       }
+      if (!pilotConfig.ownerEmail && data.user.email) {
+        const cfg = { ...pilotConfig, ownerEmail: data.user.email }
+        setPilotConfig(cfg)
+        localStorage.setItem('pilot_config', JSON.stringify(cfg))
+      }
+      const invited = await validarConvite(data.user.email ?? email)
+      if (!invited) {
+        await supabase.auth.signOut()
+        setAuthError('Acesso de piloto restrito. Seu email ainda nao foi convidado.')
+        return
+      }
       setSession({ id: data.user.id, email: data.user.email ?? email })
+      await registrarAuditoria(data.user.id, 'login_sucesso', 'Login via Supabase Auth')
+      const participante = await db.pilot_participantes.where('email').equals((data.user.email ?? email).toLowerCase()).first()
+      if (participante) {
+        const updated: PilotParticipant = {
+          ...participante,
+          ultimo_acesso: nowIso(),
+          updated_at: nowIso(),
+          updated_by: data.user.id,
+          sync_status: 'pending_sync'
+        }
+        await db.pilot_participantes.put(updated)
+        await queueOp('pilot_participantes', updated.id, updated)
+      }
+      const roleKey = `user_role_${data.user.id}`
+      const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
+      setUserRole(savedRole)
+      const onboardKey = `onboarding_done_${data.user.id}`
+      if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
       await runSync()
       return
     }
@@ -106,7 +197,24 @@ function App() {
       return
     }
 
-    setSession({ id: `local-${email}`, email })
+    const sess = { id: `local-${email}`, email }
+    if (!pilotConfig.ownerEmail) {
+      const cfg = { ...pilotConfig, ownerEmail: email }
+      setPilotConfig(cfg)
+      localStorage.setItem('pilot_config', JSON.stringify(cfg))
+    }
+    const invited = await validarConvite(email)
+    if (!invited) {
+      setAuthError('Acesso de piloto restrito. Seu email ainda nao foi convidado.')
+      return
+    }
+    setSession(sess)
+    await registrarAuditoria(sess.id, 'login_local', 'Login em modo local sem Supabase')
+    const roleKey = `user_role_${sess.id}`
+    const savedRole = (localStorage.getItem(roleKey) as UserRole | null) ?? 'proprietario'
+    setUserRole(savedRole)
+    const onboardKey = `onboarding_done_${sess.id}`
+    if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
   }
 
   async function handleSyncClick() {
@@ -120,9 +228,27 @@ function App() {
     }
     try {
       setSyncDebug('')
+      localStorage.removeItem('last_sync_error')
       await runSync()
+      if (session) {
+        const syncAt = nowIso()
+        localStorage.setItem(`last_sync_success_${session.id}`, syncAt)
+        const participante = await db.pilot_participantes.where('email').equals(session.email.toLowerCase()).first()
+        if (participante) {
+          const updated: PilotParticipant = {
+            ...participante,
+            ultimo_sync: syncAt,
+            updated_at: syncAt,
+            updated_by: session.id,
+            sync_status: 'pending_sync'
+          }
+          await db.pilot_participantes.put(updated)
+          await queueOp('pilot_participantes', updated.id, updated)
+        }
+      }
       notify('success', 'Sincronizacao feita com sucesso.')
     } catch {
+      localStorage.setItem('last_sync_error', syncDebug || 'Falha na sincronizacao')
       notify('error', 'Falha na sincronizacao. Tente novamente.')
     }
   }
@@ -138,6 +264,7 @@ function App() {
         <section className="panel">
           <h1>Sistema de Gestao de Colheita</h1>
           <p className="muted">Acesso para operacao no campo, online ou offline.</p>
+          <p className="info">Fase de demonstracao: acesso somente por convite individual.</p>
           {!hasSupabase && (
             <p className="warning">
               Modo local ativo: o sistema funciona neste aparelho mesmo sem internet.
@@ -159,10 +286,15 @@ function App() {
     <main className="app-shell">
       {notice && <div className={`notice ${notice.type}`}>{notice.message}</div>}
       {syncDebug && <div className="notice error">Detalhe tecnico: {syncDebug}</div>}
+      {pilotConfig.ativo && (
+        <div className="notice success">
+          Modo piloto (demonstracao gratuita): {pilotConfig.inicio} ate {pilotConfig.fim}
+        </div>
+      )}
       <header className="topbar">
         <div>
           <h1>Gestao de Colheita</h1>
-          <p>{session.email}</p>
+          <p>{session.email} | Perfil: {userRole}</p>
         </div>
         <div className="actions">
           <button onClick={() => void handleSyncClick()}>Sincronizar</button>
@@ -172,23 +304,37 @@ function App() {
 
       <nav className="tabs">
         <button onClick={() => setTab('dashboard')} className={tab === 'dashboard' ? 'active' : ''}>Dashboard</button>
-        <button onClick={() => setTab('cargas')} className={tab === 'cargas' ? 'active' : ''}>Nova Carga</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('cargas')} className={tab === 'cargas' ? 'active' : ''}>Nova Carga</button>}
         <button onClick={() => setTab('historico')} className={tab === 'historico' ? 'active' : ''}>Historico</button>
-        <button onClick={() => setTab('cadastros')} className={tab === 'cadastros' ? 'active' : ''}>Cadastros</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('cadastros')} className={tab === 'cadastros' ? 'active' : ''}>Cadastros</button>}
         <button onClick={() => setTab('analises')} className={tab === 'analises' ? 'active' : ''}>Analises</button>
         <button onClick={() => setTab('frete')} className={tab === 'frete' ? 'active' : ''}>Frete</button>
-        <button onClick={() => setTab('vendas')} className={tab === 'vendas' ? 'active' : ''}>Armazenagem e Vendas</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('vendas')} className={tab === 'vendas' ? 'active' : ''}>Armazenagem e Vendas</button>}
+        <button onClick={() => setTab('feedback')} className={tab === 'feedback' ? 'active' : ''}>Enviar Feedback</button>
+        {userRole === 'proprietario' && <button onClick={() => setTab('operacao')} className={tab === 'operacao' ? 'active' : ''}>Operacao Piloto</button>}
         <button onClick={() => setTab('config')} className={tab === 'config' ? 'active' : ''}>Assistente</button>
       </nav>
 
       {tab === 'dashboard' && <Dashboard refreshTick={refreshTick} />}
-      {tab === 'cargas' && <NovaCarga userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'cadastros' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'analises' && <Analises refreshTick={refreshTick} />}
       {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} onNotify={notify} />}
-      {tab === 'vendas' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} />}
+      {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
+      {tab === 'operacao' && <OperacaoSaas user={session} onNotify={notify} />}
+      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} userRole={userRole} setUserRole={setUserRole} />}
+      {onboardingOpen && (
+        <OnboardingPiloto
+          user={session}
+          onClose={() => {
+            localStorage.setItem(`onboarding_done_${session.id}`, '1')
+            setOnboardingOpen(false)
+            notify('success', 'Termo de demonstracao aceito.')
+          }}
+        />
+      )}
     </main>
   )
 }
@@ -196,16 +342,26 @@ function App() {
 function AssistenteConfiguracao({
   onNotify,
   user,
-  onRefresh
+  onRefresh,
+  userRole,
+  setUserRole
 }: {
   onNotify: (type: NoticeType, message: string) => void
   user: UserSession
   onRefresh: () => void
+  userRole: UserRole
+  setUserRole: (role: UserRole) => void
 }) {
   const conectado = hasSupabase
   const [backupInfo, setBackupInfo] = useState('')
   const [lgpdCanal, setLgpdCanal] = useState('')
   const [retencaoDias, setRetencaoDias] = useState('730')
+  const [syncOpsByTable, setSyncOpsByTable] = useState<Record<string, number>>({})
+  const [lastSyncSuccess, setLastSyncSuccess] = useState('')
+  const [pilotAtivo, setPilotAtivo] = useState(true)
+  const [pilotInicio, setPilotInicio] = useState(localDateYmd())
+  const [pilotFim, setPilotFim] = useState(localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))))
+  const [pilotOwnerEmail, setPilotOwnerEmail] = useState(user.email)
 
   useEffect(() => {
     const canalKey = `lgpd_channel_${user.id}`
@@ -214,7 +370,42 @@ function AssistenteConfiguracao({
     const retencaoSalva = localStorage.getItem(retencaoKey)
     setLgpdCanal(canalSalvo || user.email)
     if (retencaoSalva) setRetencaoDias(retencaoSalva)
+    const lastSync = localStorage.getItem(`last_sync_success_${user.id}`) ?? ''
+    setLastSyncSuccess(lastSync)
+    const pilotRaw = localStorage.getItem('pilot_config')
+    if (pilotRaw) {
+      try {
+        const cfg = JSON.parse(pilotRaw) as { ativo: boolean; inicio: string; fim: string; ownerEmail: string }
+        setPilotAtivo(cfg.ativo)
+        setPilotInicio(cfg.inicio)
+        setPilotFim(cfg.fim)
+        setPilotOwnerEmail(cfg.ownerEmail || user.email)
+      } catch {
+        setPilotOwnerEmail(user.email)
+      }
+    } else {
+      setPilotOwnerEmail(user.email)
+    }
   }, [user.id, user.email])
+
+  useEffect(() => {
+    void db.pending_ops.toArray().then((ops) => {
+      const grouped: Record<string, number> = {}
+      for (const op of ops) grouped[op.table] = (grouped[op.table] ?? 0) + 1
+      setSyncOpsByTable(grouped)
+    })
+  }, [lastSyncSuccess, user.id])
+
+  function salvarConfigPiloto() {
+    const cfg = {
+      ativo: pilotAtivo,
+      inicio: pilotInicio,
+      fim: pilotFim,
+      ownerEmail: pilotOwnerEmail.trim().toLowerCase() || user.email
+    }
+    localStorage.setItem('pilot_config', JSON.stringify(cfg))
+    onNotify('success', 'Configuracao do piloto salva com sucesso.')
+  }
 
   function baixarJson(fileName: string, payload: unknown) {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
@@ -260,6 +451,68 @@ function AssistenteConfiguracao({
     baixarJson(`backup-colheita-${stamp}.json`, payload)
     setBackupInfo('Backup exportado com sucesso.')
     onNotify('success', 'Backup exportado com sucesso.')
+  }
+
+  async function salvarSnapshotSemanal() {
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+      db.propriedades.toArray(),
+      db.produtores.toArray(),
+      db.variedades.toArray(),
+      db.armazens.toArray(),
+      db.caminhoes.toArray(),
+      db.talhoes.toArray(),
+      db.cargas.toArray(),
+      db.estoque_armazem.toArray(),
+      db.movimento_estoque.toArray(),
+      db.venda_grao.toArray()
+    ])
+    const payload = {
+      snapshot_em: nowIso(),
+      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao }
+    }
+    localStorage.setItem(`weekly_backup_${user.id}`, JSON.stringify(payload))
+    localStorage.setItem(`weekly_backup_at_${user.id}`, nowIso())
+    onNotify('success', 'Snapshot semanal salvo neste aparelho.')
+  }
+
+  async function restaurarSnapshotSemanal() {
+    const raw = localStorage.getItem(`weekly_backup_${user.id}`)
+    if (!raw) {
+      onNotify('error', 'Nenhum snapshot semanal encontrado neste aparelho.')
+      return
+    }
+    const confirmou = window.confirm('Restaurar o snapshot semanal local agora?')
+    if (!confirmou) return
+    try {
+      const payload = JSON.parse(raw) as {
+        dados: {
+          propriedades: BaseEntity[]
+          produtores: BaseEntity[]
+          variedades: BaseEntity[]
+          armazens: BaseEntity[]
+          caminhoes: BaseEntity[]
+          talhoes: Talhao[]
+          cargas: Carga[]
+          estoque_armazem: EstoqueArmazem[]
+          movimento_estoque: MovimentoEstoque[]
+          venda_grao: VendaGrao[]
+        }
+      }
+      await db.propriedades.bulkPut(payload.dados.propriedades ?? [])
+      await db.produtores.bulkPut(payload.dados.produtores ?? [])
+      await db.variedades.bulkPut(payload.dados.variedades ?? [])
+      await db.armazens.bulkPut(payload.dados.armazens ?? [])
+      await db.caminhoes.bulkPut(payload.dados.caminhoes ?? [])
+      await db.talhoes.bulkPut(payload.dados.talhoes ?? [])
+      await db.cargas.bulkPut(payload.dados.cargas ?? [])
+      await db.estoque_armazem.bulkPut(payload.dados.estoque_armazem ?? [])
+      await db.movimento_estoque.bulkPut(payload.dados.movimento_estoque ?? [])
+      await db.venda_grao.bulkPut(payload.dados.venda_grao ?? [])
+      onRefresh()
+      onNotify('success', 'Snapshot semanal restaurado com sucesso.')
+    } catch {
+      onNotify('error', 'Falha ao restaurar snapshot semanal.')
+    }
   }
 
   async function exportarDadosTitular() {
@@ -341,6 +594,7 @@ function AssistenteConfiguracao({
       await db.pending_ops.clear()
       onRefresh()
       onNotify('success', 'Dados do titular excluidos com sucesso.')
+      await registrarAuditoria(user.id, 'lgpd_exclusao_titular', 'Exclusao de dados do titular executada')
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'erro desconhecido'
       onNotify('error', `Falha ao excluir dados do titular: ${msg}`)
@@ -524,6 +778,7 @@ function AssistenteConfiguracao({
       await db.armazens.clear()
 
       onNotify('success', 'Todos os dados foram excluidos com sucesso.')
+      await registrarAuditoria(user.id, 'exclusao_total_dados', 'Exclusao total de dados local e nuvem')
       window.location.reload()
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'erro desconhecido'
@@ -557,6 +812,20 @@ function AssistenteConfiguracao({
       {conectado && (
         <p className="info">Configuracao online ativa. Login e sincronizacao entre dispositivos estao prontos para uso.</p>
       )}
+      <h3>Configuracao do Piloto Gratuito</h3>
+      <div className="grid">
+        <label>
+          <input type="checkbox" checked={pilotAtivo} onChange={(e) => setPilotAtivo(e.target.checked)} />
+          Modo piloto ativo
+        </label>
+        <input type="date" value={pilotInicio} onChange={(e) => setPilotInicio(e.target.value)} />
+        <input type="date" value={pilotFim} onChange={(e) => setPilotFim(e.target.value)} />
+        <input placeholder="Email do dono (admin principal)" value={pilotOwnerEmail} onChange={(e) => setPilotOwnerEmail(e.target.value)} />
+      </div>
+      <div className="actions">
+        <button onClick={salvarConfigPiloto}>Salvar configuracao do piloto</button>
+      </div>
+
       <h3>Backup</h3>
       <div className="actions">
         <button onClick={() => void exportarBackup()}>Exportar Backup (JSON)</button>
@@ -564,9 +833,37 @@ function AssistenteConfiguracao({
           Importar Backup (JSON)
           <input type="file" accept=".json,application/json" onChange={importarBackup} />
         </label>
+        <button onClick={() => void salvarSnapshotSemanal()}>Salvar snapshot semanal</button>
+        <button onClick={() => void restaurarSnapshotSemanal()}>Restore assistido</button>
         <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
+
+      <h3>Perfis e Acesso</h3>
+      <div className="grid">
+        <select
+          value={userRole}
+          onChange={(e) => {
+            const newRole = e.target.value as UserRole
+            setUserRole(newRole)
+            localStorage.setItem(`user_role_${user.id}`, newRole)
+            void registrarAuditoria(user.id, 'troca_perfil', `Perfil alterado para ${newRole}`)
+            onNotify('success', `Perfil atualizado para ${newRole}.`)
+          }}
+        >
+          <option value="proprietario">Proprietario (acesso total)</option>
+          <option value="operador">Operador (operacao do dia a dia)</option>
+          <option value="leitura">Leitura (somente consulta)</option>
+        </select>
+      </div>
+      <p className="muted">Ultima sincronizacao com sucesso: {lastSyncSuccess || 'ainda nao registrada'}</p>
+      <h3>Saude da Sincronizacao</h3>
+      <ul>
+        {Object.keys(syncOpsByTable).length === 0 && <li>Sem pendencias na fila local.</li>}
+        {Object.entries(syncOpsByTable).map(([table, qty]) => (
+          <li key={table}>{table}: {qty} pendencia(s)</li>
+        ))}
+      </ul>
 
       <h3>LGPD e Privacidade</h3>
       <p className="muted">
@@ -598,6 +895,323 @@ function AssistenteConfiguracao({
         <li>Canal do titular: {lgpdCanal || user.email}</li>
         <li>Direitos operacionais ativos: acesso/exportacao, exclusao e contato do titular.</li>
         <li>Boas praticas aplicadas: minimizacao de dados, autenticacao e trilha de auditoria por created_at/updated_at.</li>
+        <li>Documentos comerciais/LGPD no projeto: docs/TERMOS_DE_USO.md, docs/POLITICA_DE_PRIVACIDADE.md e docs/DPA_MODELO.md.</li>
+      </ul>
+    </section>
+  )
+}
+
+function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: NoticeType, message: string) => void }) {
+  const [participantes, setParticipantes] = useState<PilotParticipant[]>([])
+  const [feedbacks, setFeedbacks] = useState<FeedbackItem[]>([])
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteNome, setInviteNome] = useState('')
+  const [logs, setLogs] = useState<AuditLog[]>([])
+  const [opsPendentes, setOpsPendentes] = useState(0)
+  const [ultimoErroSync, setUltimoErroSync] = useState('')
+
+  useEffect(() => {
+    void Promise.all([
+      db.pilot_participantes.toArray(),
+      db.feedback_items.toArray(),
+      db.audit_logs.orderBy('created_at').reverse().limit(20).toArray(),
+      db.pending_ops.count()
+    ]).then(([ps, fs, ls, pend]) => {
+      setParticipantes(ps)
+      setFeedbacks(fs)
+      setLogs(ls)
+      setOpsPendentes(pend)
+      setUltimoErroSync(localStorage.getItem('last_sync_error') ?? '')
+    })
+  }, [user.id])
+
+  async function convidarParticipante() {
+    if (!inviteEmail.trim()) {
+      onNotify('error', 'Informe o email do participante.')
+      return
+    }
+    const existente = await db.pilot_participantes.where('email').equals(inviteEmail.trim().toLowerCase()).first()
+    if (existente) {
+      onNotify('error', 'Este email ja esta cadastrado no piloto.')
+      return
+    }
+    const now = nowIso()
+    const novo: PilotParticipant = {
+      id: makeId(),
+      email: inviteEmail.trim().toLowerCase(),
+      nome: inviteNome.trim() || inviteEmail.trim().split('@')[0],
+      status: 'ativo',
+      data_entrada: localDateYmd(),
+      ultimo_acesso: '',
+      ultimo_sync: '',
+      created_at: now,
+      updated_at: now,
+      created_by: user.id,
+      updated_by: user.id,
+      sync_status: 'pending_sync'
+    }
+    await db.pilot_participantes.put(novo)
+    await queueOp('pilot_participantes', novo.id, novo)
+    await runSync()
+    await registrarAuditoria(user.id, 'piloto_convite_criado', `Convite para ${novo.email}`)
+    setParticipantes(await db.pilot_participantes.toArray())
+    setInviteEmail('')
+    setInviteNome('')
+    onNotify('success', 'Participante convidado no piloto.')
+  }
+
+  async function alterarStatusParticipante(id: string, status: PilotParticipant['status']) {
+    const row = await db.pilot_participantes.get(id)
+    if (!row) return
+    const updated: PilotParticipant = {
+      ...row,
+      status,
+      updated_at: nowIso(),
+      updated_by: user.id,
+      sync_status: 'pending_sync'
+    }
+    await db.pilot_participantes.put(updated)
+    await queueOp('pilot_participantes', updated.id, updated)
+    await runSync()
+    await registrarAuditoria(user.id, 'piloto_status_participante', `${row.email} => ${status}`)
+    setParticipantes(await db.pilot_participantes.toArray())
+  }
+
+  async function resetAmbientePiloto() {
+    const confirmou = window.confirm('Resetar ambiente de PILOTO? Esta acao apaga dados de teste.')
+    if (!confirmou) return
+    const confirmou2 = window.confirm('Confirmacao final: resetar ambiente piloto agora?')
+    if (!confirmou2) return
+
+    try {
+      await db.pending_ops.clear()
+      await db.feedback_items.clear()
+      await db.pilot_participantes.clear()
+      await db.cargas.clear()
+      await db.venda_grao.clear()
+      await db.movimento_estoque.clear()
+      await db.estoque_armazem.clear()
+      await db.talhoes.clear()
+      await db.propriedades.clear()
+      await db.produtores.clear()
+      await db.variedades.clear()
+      await db.armazens.clear()
+      await db.caminhoes.clear()
+      await registrarAuditoria(user.id, 'piloto_reset_ambiente', 'Ambiente de piloto resetado')
+      onNotify('success', 'Ambiente piloto resetado com sucesso.')
+      setParticipantes([])
+      setFeedbacks([])
+    } catch {
+      onNotify('error', 'Falha ao resetar ambiente piloto.')
+    }
+  }
+
+  const ativos = participantes.filter((p) => p.status === 'ativo').length
+  const ativadosComUso = participantes.filter((p) => Boolean(p.ultimo_sync || p.ultimo_acesso)).length
+  const ativacao = participantes.length > 0 ? Math.round((ativadosComUso / participantes.length) * 100) : 0
+  const limite30 = new Date()
+  limite30.setDate(limite30.getDate() - 30)
+  const limite90 = new Date()
+  limite90.setDate(limite90.getDate() - 90)
+  const retencao30 = participantes.filter((p) => p.ultimo_acesso && new Date(p.ultimo_acesso) >= limite30).length
+  const retencao90 = participantes.filter((p) => p.ultimo_acesso && new Date(p.ultimo_acesso) >= limite90).length
+  const taxaErroSync = participantes.length > 0 ? Math.round((opsPendentes / participantes.length) * 100) : 0
+  const feedbackPorCategoria = feedbacks.reduce<Record<string, number>>((acc, fb) => {
+    acc[fb.categoria] = (acc[fb.categoria] ?? 0) + 1
+    return acc
+  }, {})
+
+  return (
+    <section className="panel">
+      <h2>Painel Interno do Piloto</h2>
+      <p className="muted">Termo de participacao: uso gratuito para testes e melhorias, sem cobranca nesta fase.</p>
+      <div className="kpis">
+        <article><span>Participantes ativos</span><strong>{ativos}</strong></article>
+        <article><span>Taxa de ativacao</span><strong>{ativacao}%</strong></article>
+        <article><span>Pendencias de sync</span><strong>{opsPendentes}</strong></article>
+        <article><span>Retencao 30 dias</span><strong>{retencao30}</strong></article>
+        <article><span>Retencao 90 dias</span><strong>{retencao90}</strong></article>
+        <article><span>Taxa erro sync (proxy)</span><strong>{taxaErroSync}%</strong></article>
+        <article><span>Feedbacks recebidos</span><strong>{feedbacks.length}</strong></article>
+      </div>
+      {ultimoErroSync && <p className="error">Ultimo erro de sync: {ultimoErroSync}</p>}
+
+      <h3>Convidar participante</h3>
+      <div className="grid">
+        <input placeholder="Email do produtor" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
+        <input placeholder="Nome do produtor" value={inviteNome} onChange={(e) => setInviteNome(e.target.value)} />
+      </div>
+      <button onClick={() => void convidarParticipante()}>Adicionar convite</button>
+
+      <h3>Participantes</h3>
+      <ul>
+        {participantes.length === 0 && <li>Nenhum participante convidado.</li>}
+        {participantes.map((p) => (
+          <li key={p.id}>
+            {p.nome} | {p.email} | status: {p.status} | entrada: {p.data_entrada} | ultimo acesso: {p.ultimo_acesso || '-'} | ultimo sync: {p.ultimo_sync || '-'}
+            <select value={p.status} onChange={(e) => void alterarStatusParticipante(p.id, e.target.value as PilotParticipant['status'])}>
+              <option value="ativo">Ativo</option>
+              <option value="inativo">Inativo</option>
+            </select>
+          </li>
+        ))}
+      </ul>
+
+      <h3>Feedback por categoria</h3>
+      <ul>
+        {Object.keys(feedbackPorCategoria).length === 0 && <li>Nenhum feedback registrado.</li>}
+        {Object.entries(feedbackPorCategoria).map(([cat, qtd]) => <li key={cat}>{cat}: {qtd}</li>)}
+      </ul>
+
+      <h3>Ultimos logs criticos</h3>
+      <ul>
+        {logs.length === 0 && <li>Nenhum log registrado ainda.</li>}
+        {logs.slice(0, 10).map((l) => (
+          <li key={l.id}>{l.created_at} | {l.action} | {l.details ?? '-'}</li>
+        ))}
+      </ul>
+
+      <button onClick={() => void resetAmbientePiloto()}>Resetar ambiente piloto</button>
+    </section>
+  )
+}
+
+function OnboardingPiloto({
+  user,
+  onClose
+}: {
+  user: UserSession
+  onClose: () => void
+}) {
+  return (
+    <section className="panel">
+      <h2>Termo de Participacao no Piloto</h2>
+      <p className="muted">
+        Bem-vindo, {user.email}. Esta fase e gratuita e serve para validacao do sistema em campo.
+        Seus feedbacks serao usados para melhorias antes da comercializacao.
+      </p>
+      <ul>
+        <li>Sem cobranca nesta fase de demonstracao.</li>
+        <li>Uso por convite individual e acompanhamento do administrador.</li>
+        <li>Voce pode enviar feedbacks na aba Enviar Feedback.</li>
+      </ul>
+      <button onClick={onClose}>Aceitar e continuar</button>
+    </section>
+  )
+}
+
+function FeedbackPiloto({
+  user,
+  onNotify,
+  refreshTick,
+  onSaved,
+  isOwner
+}: {
+  user: UserSession
+  onNotify: (type: NoticeType, message: string) => void
+  refreshTick: number
+  onSaved: () => void
+  isOwner: boolean
+}) {
+  const [categoria, setCategoria] = useState<FeedbackItem['categoria']>('usabilidade')
+  const [prioridade, setPrioridade] = useState<FeedbackItem['prioridade']>('media')
+  const [descricao, setDescricao] = useState('')
+  const [contexto, setContexto] = useState('')
+  const [contato, setContato] = useState(user.email)
+  const [lista, setLista] = useState<FeedbackItem[]>([])
+
+  useEffect(() => {
+    void db.feedback_items.orderBy('created_at').reverse().toArray().then(setLista)
+  }, [refreshTick])
+
+  async function enviar() {
+    if (!descricao.trim() || !contexto.trim()) {
+      onNotify('error', 'Descreva o feedback e o contexto da tela/fluxo.')
+      return
+    }
+    const now = nowIso()
+    const row: FeedbackItem = {
+      id: makeId(),
+      categoria,
+      prioridade,
+      descricao: descricao.trim(),
+      contexto: contexto.trim(),
+      contato: contato.trim() || undefined,
+      status: 'novo',
+      created_at: now,
+      updated_at: now,
+      created_by: user.id,
+      updated_by: user.id,
+      sync_status: 'pending_sync'
+    }
+    await db.feedback_items.put(row)
+    await queueOp('feedback_items', row.id, row)
+    await runSync()
+    await registrarAuditoria(user.id, 'feedback_enviado', `${categoria}/${prioridade}`)
+    setDescricao('')
+    setContexto('')
+    onSaved()
+    setLista(await db.feedback_items.orderBy('created_at').reverse().toArray())
+    onNotify('success', 'Feedback enviado com sucesso. Obrigado!')
+  }
+
+  async function atualizarStatus(id: string, status: FeedbackItem['status']) {
+    const fb = await db.feedback_items.get(id)
+    if (!fb) return
+    const updated: FeedbackItem = { ...fb, status, updated_at: nowIso(), updated_by: user.id, sync_status: 'pending_sync' }
+    await db.feedback_items.put(updated)
+    await queueOp('feedback_items', updated.id, updated)
+    await runSync()
+    setLista(await db.feedback_items.orderBy('created_at').reverse().toArray())
+    onNotify('success', 'Status do feedback atualizado.')
+  }
+
+  return (
+    <section className="panel">
+      <h2>Enviar Feedback</h2>
+      <p className="muted">Use este formulario para sugerir melhorias do piloto gratuito.</p>
+      <div className="grid">
+        <select value={categoria} onChange={(e) => setCategoria(e.target.value as FeedbackItem['categoria'])}>
+          <option value="erro">Erro</option>
+          <option value="usabilidade">Usabilidade</option>
+          <option value="nova_funcionalidade">Nova funcionalidade</option>
+          <option value="relatorio">Relatorio</option>
+          <option value="outros">Outros</option>
+        </select>
+        <select value={prioridade} onChange={(e) => setPrioridade(e.target.value as FeedbackItem['prioridade'])}>
+          <option value="baixa">Baixa</option>
+          <option value="media">Media</option>
+          <option value="alta">Alta</option>
+        </select>
+        <input placeholder="Contexto (tela/fluxo)" value={contexto} onChange={(e) => setContexto(e.target.value)} />
+        <input placeholder="Contato opcional" value={contato} onChange={(e) => setContato(e.target.value)} />
+      </div>
+      <textarea
+        value={descricao}
+        onChange={(e) => setDescricao(e.target.value)}
+        placeholder="Descreva o feedback com exemplos reais."
+        style={{ width: '100%', minHeight: 110, padding: '0.7rem', borderRadius: 10, border: '1px solid #acbaae' }}
+      />
+      <div className="actions">
+        <button onClick={() => void enviar()}>Enviar feedback</button>
+      </div>
+
+      <h3>Feedbacks registrados</h3>
+      <ul>
+        {lista.length === 0 && <li>Nenhum feedback enviado ainda.</li>}
+        {lista.map((f) => (
+          <li key={f.id}>
+            {f.created_at.slice(0, 10)} | {f.categoria} | prioridade {f.prioridade} | status {f.status} | {f.contexto} | {f.descricao}
+            {isOwner && (
+              <select value={f.status} onChange={(e) => void atualizarStatus(f.id, e.target.value as FeedbackItem['status'])}>
+                <option value="novo">Novo</option>
+                <option value="em_analise">Em analise</option>
+                <option value="planejado">Planejado</option>
+                <option value="concluido">Concluido</option>
+              </select>
+            )}
+          </li>
+        ))}
       </ul>
     </section>
   )
@@ -854,6 +1468,7 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       if (table) setLista(await table.toArray())
     }
     onNotify('success', 'Cadastro atualizado com sucesso.')
+    await registrarAuditoria(userId, 'cadastro_sensivel_editado', `Tipo ${tipo} atualizado`)
   }
 
   async function apagarCadastro(item: BaseEntity | Talhao) {
@@ -883,6 +1498,7 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       if (editId === item.id) setEditId('')
       onSaved()
       onNotify('success', 'Cadastro apagado com sucesso.')
+      await registrarAuditoria(userId, 'cadastro_sensivel_excluido', `Tipo ${tipo} removido`)
     } catch {
       window.alert('Nao foi possivel apagar. Esse cadastro pode estar sendo usado em cargas ja registradas.')
       onNotify('error', 'Nao foi possivel apagar este cadastro.')
@@ -2068,6 +2684,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     setEditId('')
     onSaved()
     onNotify('success', 'Carga atualizada com sucesso.')
+    await registrarAuditoria(userId, 'carga_editada', `Carga ${updated.id} atualizada`)
   }
 
   async function apagarCarga(cargaId: string) {
@@ -2092,6 +2709,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     if (editId === cargaId) setEditId('')
     onSaved()
     onNotify('success', 'Carga apagada com sucesso.')
+    await registrarAuditoria(userId, 'carga_excluida', `Carga ${cargaId} removida`)
   }
 
   return (

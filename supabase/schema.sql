@@ -123,6 +123,36 @@ create table if not exists venda_grao (
 );
 alter table venda_grao add column if not exists produtor_id uuid references produtores(id);
 
+create table if not exists pilot_participantes (
+  id uuid primary key,
+  email text not null,
+  nome text not null,
+  status text not null,
+  data_entrada date not null,
+  ultimo_acesso timestamptz,
+  ultimo_sync timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
+create table if not exists feedback_items (
+  id uuid primary key,
+  categoria text not null,
+  prioridade text not null,
+  descricao text not null,
+  contexto text not null,
+  contato text,
+  status text not null,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
 alter table propriedades enable row level security;
 alter table produtores enable row level security;
 alter table variedades enable row level security;
@@ -133,6 +163,8 @@ alter table cargas enable row level security;
 alter table estoque_armazem enable row level security;
 alter table movimento_estoque enable row level security;
 alter table venda_grao enable row level security;
+alter table pilot_participantes enable row level security;
+alter table feedback_items enable row level security;
 
 drop policy if exists "farm_read_propriedades" on propriedades;
 drop policy if exists "farm_write_propriedades" on propriedades;
@@ -148,6 +180,10 @@ drop policy if exists "farm_read_talhoes" on talhoes;
 drop policy if exists "farm_write_talhoes" on talhoes;
 drop policy if exists "farm_read_cargas" on cargas;
 drop policy if exists "farm_write_cargas" on cargas;
+drop policy if exists "farm_read_pilot_participantes" on pilot_participantes;
+drop policy if exists "farm_write_pilot_participantes" on pilot_participantes;
+drop policy if exists "farm_read_feedback_items" on feedback_items;
+drop policy if exists "farm_write_feedback_items" on feedback_items;
 
 create policy "farm_read_propriedades" on propriedades for select to authenticated using (true);
 create policy "farm_write_propriedades" on propriedades for all to authenticated using (true) with check (true);
@@ -169,3 +205,7 @@ create policy "farm_read_movimento_estoque" on movimento_estoque for select to a
 create policy "farm_write_movimento_estoque" on movimento_estoque for all to authenticated using (true) with check (true);
 create policy "farm_read_venda_grao" on venda_grao for select to authenticated using (true);
 create policy "farm_write_venda_grao" on venda_grao for all to authenticated using (true) with check (true);
+create policy "farm_read_pilot_participantes" on pilot_participantes for select to authenticated using (true);
+create policy "farm_write_pilot_participantes" on pilot_participantes for all to authenticated using (true) with check (true);
+create policy "farm_read_feedback_items" on feedback_items for select to authenticated using (true);
+create policy "farm_write_feedback_items" on feedback_items for all to authenticated using (true) with check (true);
