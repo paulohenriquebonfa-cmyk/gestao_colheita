@@ -44,6 +44,13 @@ export const formatDateTimeBr = (value?: string | null) => {
   }).format(date)
 }
 
+export const formatDateTimeBrWithZone = (value?: string | null) => {
+  const base = formatDateTimeBr(value)
+  if (base === '-' || base === value) return base
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Fuso local'
+  return `${base} (${tz})`
+}
+
 export const parsePtBrNumber = (value: string) => {
   const normalized = value.replace(/\./g, '').replace(',', '.').trim()
   const n = Number(normalized)

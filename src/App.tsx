@@ -5,7 +5,7 @@ import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { validarCarga } from './core/validation'
-import { formatDateBr, formatDateTimeBr, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
+import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import type { AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
@@ -1992,7 +1992,7 @@ function Analises({ refreshTick }: { refreshTick: number }) {
   function exportarRelProdPdf() {
     const doc = new jsPDF()
     const nomeProd = produtores.find((p) => p.id === produtorRelatorioId)?.nome ?? 'Produtor'
-    const emissao = new Date().toLocaleString('pt-BR')
+    const emissao = formatDateTimeBrWithZone(nowIso())
     let y = 14
     doc.setFontSize(17)
     doc.text('RELATORIO DE ENTREGA DO PRODUTOR', 14, y)
@@ -2000,9 +2000,9 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     doc.setFontSize(11)
     doc.text(`Produtor: ${nomeProd}`, 14, y)
     y += 6
-    doc.text(`Periodo: ${dataRelInicio || '-'} ate ${dataRelFim || '-'}`, 14, y)
+    doc.text(`Periodo: ${dataRelInicio ? formatDateBr(dataRelInicio) : '-'} ate ${dataRelFim ? formatDateBr(dataRelFim) : '-'}`, 14, y)
     y += 6
-    doc.text(`Emitido em: ${emissao}`, 14, y)
+    doc.text(`Data/Hora local: ${emissao}`, 14, y)
     y += 8
     doc.text(`Total entregue: ${formatPtBrNumber(totalRelKg)} kg liquido | ${formatPtBrNumber(totalRelSacas)} sacas`, 14, y)
     y += 9
@@ -2362,12 +2362,15 @@ function ArmazenagemVendas({
 
   function exportarRelatorioPdf() {
     const doc = new jsPDF()
+    const emissao = formatDateTimeBrWithZone(nowIso())
     let y = 14
     doc.setFontSize(16)
     doc.text('RELATORIO DE ARMAZENAGEM E VENDAS', 14, y)
     y += 8
     doc.setFontSize(11)
-    doc.text(`Periodo: ${filtroInicio} ate ${filtroFim}`, 14, y)
+    doc.text(`Data/Hora local: ${emissao}`, 14, y)
+    y += 6
+    doc.text(`Periodo: ${formatDateBr(filtroInicio)} ate ${formatDateBr(filtroFim)}`, 14, y)
     y += 6
     doc.text(`Total vendido: ${formatPtBrNumber(resumoVendas.totalSacas)} sacas | R$ ${formatPtBrNumber(resumoVendas.totalValor)}`, 14, y)
     y += 6
@@ -2555,14 +2558,14 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
     const placaSelecionada = caminhaoId ? (placaPorId.get(caminhaoId) ?? caminhaoId) : 'Todos'
     const fazendaNome = propriedades.length > 0 ? propriedades[0].nome : 'Fazenda nao informada'
     let y = 14
-    const dataEmissao = new Date().toLocaleString('pt-BR')
+    const dataEmissao = formatDateTimeBrWithZone(nowIso())
     doc.setFontSize(17)
     doc.text('RELATORIO DE FRETE', 14, y)
     y += 8
     doc.setFontSize(11)
     doc.text('Documento de conferencia para transportador e contratante', 14, y)
     y += 6
-    doc.text(`Emitido em: ${dataEmissao}`, 14, y)
+    doc.text(`Data/Hora local: ${dataEmissao}`, 14, y)
     y += 6
     doc.text(`Fazenda: ${fazendaNome}`, 14, y)
     y += 6
@@ -2570,7 +2573,7 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
     y += 6
     doc.text(`Caminhao (placa): ${placaSelecionada}`, 14, y)
     y += 6
-    doc.text(`Periodo: ${dataInicio || '-'} ate ${dataFim || '-'}`, 14, y)
+    doc.text(`Periodo: ${dataInicio ? formatDateBr(dataInicio) : '-'} ate ${dataFim ? formatDateBr(dataFim) : '-'}`, 14, y)
     y += 6
     doc.setDrawColor(140, 160, 150)
     doc.line(14, y, 196, y)
