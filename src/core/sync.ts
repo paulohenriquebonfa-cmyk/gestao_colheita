@@ -2,7 +2,7 @@ import { db } from './db'
 import { hasSupabase, supabase } from './supabase'
 import type { BaseEntity, Carga, PendingOp, Talhao } from './types'
 
-const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items'] as const
+const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items', 'area_variedade_talhao'] as const
 
 function normalizePayloadForCloud(table: string, payload: Record<string, unknown>) {
   if (table !== 'pilot_participantes') return payload
@@ -139,6 +139,8 @@ async function pushOp(op: PendingOp) {
     await db.pilot_participantes.update(op.record_id, { sync_status: 'synced' })
   } else if (op.table === 'feedback_items') {
     await db.feedback_items.update(op.record_id, { sync_status: 'synced' })
+  } else if (op.table === 'area_variedade_talhao') {
+    await db.area_variedade_talhao.update(op.record_id, { sync_status: 'synced' })
   } else {
     const tableMap: Record<string, { update: (id: string, data: Partial<BaseEntity>) => Promise<number> }> = {
       propriedades: db.propriedades,
@@ -171,7 +173,8 @@ async function pullFromCloud() {
     movimento_estoque: [],
     venda_grao: [],
     pilot_participantes: [],
-    feedback_items: []
+    feedback_items: [],
+    area_variedade_talhao: []
   }
 
   for (const table of TABLES) {
@@ -200,6 +203,7 @@ async function pullFromCloud() {
   await db.venda_grao.clear()
   await db.pilot_participantes.clear()
   await db.feedback_items.clear()
+  await db.area_variedade_talhao.clear()
 
   await db.propriedades.bulkPut(pulledData.propriedades as unknown as BaseEntity[])
   await db.produtores.bulkPut(pulledData.produtores as unknown as BaseEntity[])
@@ -213,6 +217,7 @@ async function pullFromCloud() {
   await db.venda_grao.bulkPut(pulledData.venda_grao as never[])
   await db.pilot_participantes.bulkPut(pulledData.pilot_participantes as never[])
   await db.feedback_items.bulkPut(pulledData.feedback_items as never[])
+  await db.area_variedade_talhao.bulkPut(pulledData.area_variedade_talhao as never[])
 }
 
 export async function runSync() {

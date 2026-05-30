@@ -153,6 +153,18 @@ create table if not exists feedback_items (
   sync_status text not null
 );
 
+create table if not exists area_variedade_talhao (
+  id uuid primary key,
+  talhao_id uuid not null references talhoes(id),
+  variedade_id uuid not null references variedades(id),
+  area_ha numeric not null check (area_ha > 0),
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
 alter table propriedades enable row level security;
 alter table produtores enable row level security;
 alter table variedades enable row level security;
@@ -165,6 +177,7 @@ alter table movimento_estoque enable row level security;
 alter table venda_grao enable row level security;
 alter table pilot_participantes enable row level security;
 alter table feedback_items enable row level security;
+alter table area_variedade_talhao enable row level security;
 
 drop policy if exists "farm_read_propriedades" on propriedades;
 drop policy if exists "farm_write_propriedades" on propriedades;
@@ -193,6 +206,8 @@ drop policy if exists "farm_update_pilot_participantes" on pilot_participantes;
 drop policy if exists "farm_delete_pilot_participantes" on pilot_participantes;
 drop policy if exists "farm_read_feedback_items" on feedback_items;
 drop policy if exists "farm_write_feedback_items" on feedback_items;
+drop policy if exists "farm_read_area_variedade_talhao" on area_variedade_talhao;
+drop policy if exists "farm_write_area_variedade_talhao" on area_variedade_talhao;
 
 create policy "farm_read_propriedades" on propriedades for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_propriedades" on propriedades for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
@@ -220,3 +235,5 @@ create policy "farm_update_pilot_participantes" on pilot_participantes for updat
 create policy "farm_delete_pilot_participantes" on pilot_participantes for delete to authenticated using (created_by = auth.uid()::text);
 create policy "farm_read_feedback_items" on feedback_items for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_feedback_items" on feedback_items for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+create policy "farm_read_area_variedade_talhao" on area_variedade_talhao for select to authenticated using (created_by = auth.uid()::text);
+create policy "farm_write_area_variedade_talhao" on area_variedade_talhao for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);

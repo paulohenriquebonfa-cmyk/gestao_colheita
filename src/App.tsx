@@ -6,7 +6,7 @@ import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { validarCarga } from './core/validation'
 import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
-import type { AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
+import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
 
@@ -394,7 +394,7 @@ function App() {
       {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'analises' && <Analises refreshTick={refreshTick} />}
+      {tab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} />}
       {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} onNotify={notify} />}
       {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
@@ -2122,7 +2122,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   )
 }
 
-function Analises({ refreshTick }: { refreshTick: number }) {
+function Analises({ refreshTick, userId }: { refreshTick: number; userId: string }) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [talhoes, setTalhoes] = useState<Talhao[]>([])
   const [variedades, setVariedades] = useState<BaseEntity[]>([])
@@ -2132,6 +2132,10 @@ function Analises({ refreshTick }: { refreshTick: number }) {
   const [produtorRelatorioId, setProdutorRelatorioId] = useState('')
   const [dataRelInicio, setDataRelInicio] = useState('')
   const [dataRelFim, setDataRelFim] = useState('')
+  const [cfgTalhaoId, setCfgTalhaoId] = useState('')
+  const [cfgVariedadeId, setCfgVariedadeId] = useState('')
+  const [cfgAreaHa, setCfgAreaHa] = useState('')
+  const [areasVarTalhao, setAreasVarTalhao] = useState<AreaVariedadeTalhao[]>([])
 
   useEffect(() => {
     void Promise.all([
@@ -2149,10 +2153,17 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     })
   }, [refreshTick])
 
+  useEffect(() => {
+    void db.area_variedade_talhao.toArray().then((rows) => {
+      setAreasVarTalhao(rows.filter((r) => r.created_by === userId))
+    })
+  }, [refreshTick, userId])
+
   const mediaGeralKg = cargas.length > 0 ? cargas.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / cargas.length : 0
   const mediaGeralSacas = cargas.length > 0 ? cargas.reduce((acc, c) => acc + c.sacas, 0) / cargas.length : 0
   const areaTotal = talhoes.reduce((acc, t) => acc + t.area_ha, 0)
   const prodGeral = produtividadeSacasPorHa(cargas.reduce((acc, c) => acc + c.sacas, 0), areaTotal)
+  const areaConfigMap = new Map(areasVarTalhao.map((a) => [`${a.talhao_id}::${a.variedade_id}`, a.area_ha]))
 
   const mediasTalhao = talhoes.map((t) => {
     const items = cargas.filter((c) => c.talhao_id === t.id)
@@ -2167,13 +2178,11 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     const items = cargas.filter((c) => c.variedade_id === v.id)
     const mediaKg = items.length > 0 ? items.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / items.length : 0
     const mediaSacas = items.length > 0 ? items.reduce((acc, c) => acc + c.sacas, 0) / items.length : 0
-    const talhoesDaVariedade = new Set(items.map((c) => c.talhao_id))
-    const areaVariedade = talhoes
-      .filter((t) => talhoesDaVariedade.has(t.id))
-      .reduce((acc, t) => acc + t.area_ha, 0)
+    const pares = new Set(items.map((c) => `${c.talhao_id}::${v.id}`))
+    const areaVariedade = Array.from(pares).reduce((acc, key) => acc + (areaConfigMap.get(key) ?? 0), 0)
     const totalSacasVariedade = items.reduce((acc, c) => acc + c.sacas, 0)
     const prodSacasHa = produtividadeSacasPorHa(totalSacasVariedade, areaVariedade)
-    return { nome: v.nome, mediaKg, mediaSacas, prodSacasHa }
+    return { nome: v.nome, mediaKg, mediaSacas, prodSacasHa, areaVariedade }
   })
 
   const entregaPorProdutor = produtores.map((p) => {
@@ -2195,6 +2204,63 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     ? cargasSelecionadas.reduce((acc, c) => acc + c.sacas, 0) / cargasSelecionadas.length
     : 0
   const prodSel = produtividadeSacasPorHa(cargasSelecionadas.reduce((acc, c) => acc + c.sacas, 0), areaSelecionada)
+
+  const talhaoParaAnalise = cfgTalhaoId || talhoes[0]?.id || ''
+  const variedadesNoTalhao = variedades.filter((v) =>
+    cargas.some((c) => c.talhao_id === talhaoParaAnalise && c.variedade_id === v.id)
+  )
+  const produtividadeVariedadeNoTalhao = variedadesNoTalhao.map((v) => {
+    const itens = cargas.filter((c) => c.talhao_id === talhaoParaAnalise && c.variedade_id === v.id)
+    const sacasTotal = itens.reduce((acc, c) => acc + c.sacas, 0)
+    const areaCfg = areaConfigMap.get(`${talhaoParaAnalise}::${v.id}`) ?? 0
+    const scHa = produtividadeSacasPorHa(sacasTotal, areaCfg)
+    return { variedadeId: v.id, variedade: v.nome, sacasTotal, areaCfg, scHa }
+  })
+
+  const areasDoTalhao = areasVarTalhao.filter((a) => a.talhao_id === talhaoParaAnalise)
+
+  async function salvarAreaVariedadeTalhao() {
+    if (!cfgTalhaoId || !cfgVariedadeId) return
+    const area = parsePtBrNumber(cfgAreaHa)
+    if (!Number.isFinite(area) || area <= 0) return
+
+    const now = nowIso()
+    const existente = areasVarTalhao.find((a) => a.talhao_id === cfgTalhaoId && a.variedade_id === cfgVariedadeId)
+    const row: AreaVariedadeTalhao = existente
+      ? {
+          ...existente,
+          area_ha: area,
+          updated_at: now,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+      : {
+          id: makeId(),
+          talhao_id: cfgTalhaoId,
+          variedade_id: cfgVariedadeId,
+          area_ha: area,
+          created_at: now,
+          updated_at: now,
+          created_by: userId,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+    await db.area_variedade_talhao.put(row)
+    await queueOp('area_variedade_talhao', row.id, row)
+    await runSync()
+    const rows = await db.area_variedade_talhao.toArray()
+    setAreasVarTalhao(rows.filter((r) => r.created_by === userId))
+    setCfgAreaHa('')
+  }
+
+  async function removerAreaVariedadeTalhao(id: string) {
+    await db.area_variedade_talhao.delete(id)
+    await db.pending_ops.where('record_id').equals(id).delete()
+    await queueDeleteOp('area_variedade_talhao', id)
+    await runSync()
+    const rows = await db.area_variedade_talhao.toArray()
+    setAreasVarTalhao(rows.filter((r) => r.created_by === userId))
+  }
 
   function toggleTalhao(id: string) {
     setTalhoesSelecionados((prev) =>
@@ -2323,7 +2389,41 @@ function Analises({ refreshTick }: { refreshTick: number }) {
             <h4>{m.nome}</h4>
             <p><strong>{formatPtBrNumber(m.mediaKg)}</strong> kg/carga</p>
             <p><strong>{formatPtBrNumber(m.mediaSacas)}</strong> sacas/carga</p>
+            <p><strong>{formatPtBrNumber(m.areaVariedade)}</strong> ha configurados</p>
             <p><strong>{formatPtBrNumber(m.prodSacasHa)}</strong> sacas/ha</p>
+          </article>
+        ))}
+      </div>
+      <h3>Area por variedade dentro do talhao</h3>
+      <p className="muted">Configure os hectares de cada variedade no talhao para calcular sc/ha com precisao.</p>
+      <div className="grid">
+        <SelectFromList label="Talhao" value={cfgTalhaoId} onChange={setCfgTalhaoId} items={talhoes} />
+        <SelectFromList label="Variedade" value={cfgVariedadeId} onChange={setCfgVariedadeId} items={variedades} />
+        <input placeholder="Area da variedade (ha)" value={cfgAreaHa} onChange={(e) => setCfgAreaHa(e.target.value)} />
+        <button onClick={() => void salvarAreaVariedadeTalhao()}>Salvar area</button>
+      </div>
+      <div className="analysis-cards">
+        {areasDoTalhao.length === 0 && <article className="analysis-card"><p>Nenhuma area configurada para este talhao.</p></article>}
+        {areasDoTalhao.map((a) => (
+          <article className="analysis-card" key={a.id}>
+            <h4>{variedades.find((v) => v.id === a.variedade_id)?.nome ?? a.variedade_id}</h4>
+            <p><strong>{formatPtBrNumber(a.area_ha)}</strong> ha</p>
+            <button onClick={() => void removerAreaVariedadeTalhao(a.id)}>Remover</button>
+          </article>
+        ))}
+      </div>
+      <h3>Produtividade por variedade no talhao (sc/ha)</h3>
+      <div className="grid">
+        <SelectFromList label="Talhao para analisar" value={talhaoParaAnalise} onChange={setCfgTalhaoId} items={talhoes} />
+      </div>
+      <div className="analysis-cards">
+        {produtividadeVariedadeNoTalhao.length === 0 && <article className="analysis-card"><p>Sem cargas com variedade neste talhao.</p></article>}
+        {produtividadeVariedadeNoTalhao.map((r) => (
+          <article className="analysis-card" key={r.variedadeId}>
+            <h4>{r.variedade}</h4>
+            <p><strong>{formatPtBrNumber(r.sacasTotal)}</strong> sacas</p>
+            <p><strong>{formatPtBrNumber(r.areaCfg)}</strong> ha configurados</p>
+            <p><strong>{formatPtBrNumber(r.scHa)}</strong> sc/ha</p>
           </article>
         ))}
       </div>

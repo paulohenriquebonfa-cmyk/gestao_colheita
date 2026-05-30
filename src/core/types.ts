@@ -131,6 +131,18 @@ export interface FeedbackItem {
   sync_status: SyncStatus
 }
 
+export interface AreaVariedadeTalhao {
+  id: string
+  talhao_id: string
+  variedade_id: string
+  area_ha: number
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+  sync_status: SyncStatus
+}
+
 export interface Filters {
   dataInicio?: string
   dataFim?: string
