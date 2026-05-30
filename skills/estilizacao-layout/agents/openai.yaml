@@ -1,0 +1,4 @@
+interface:
+  display_name: "Estilizacao e Layout"
+  short_description: "Revisa e melhora visual, responsividade e consistencia de UI"
+  default_prompt: "Use $estilizacao-layout para melhorar o visual e o layout desta tela."

@@ -27,6 +27,27 @@ function placaLegivel(rawPlaca: string, nomeCaminhao?: string) {
   return rawPlaca
 }
 
+function statusSyncLegivel(syncStatus: Carga['sync_status'], pending: boolean) {
+  if (pending) return 'Pendente de sincronizacao'
+  if (syncStatus === 'synced') return 'Sincronizado'
+  if (syncStatus === 'sync_error') return 'Erro de sincronizacao'
+  if (syncStatus === 'local_only') return 'Somente neste aparelho'
+  return 'Pendente de sincronizacao'
+}
+
+function isMovimentoAutomaticoDeCarga(m: MovimentoEstoque) {
+  const motivo = (m.motivo ?? '').toLowerCase()
+  return motivo.includes('ajuste automatico por edicao de carga')
+    || motivo.includes('transferencia de armazem por edicao de carga')
+    || motivo.includes('ajuste automatico por exclusao de carga')
+}
+
+function isAjusteManualValido(m: MovimentoEstoque) {
+  if (m.origem !== 'manual') return false
+  const motivo = (m.motivo ?? '').trim().toLowerCase()
+  return motivo.startsWith('ajuste manual:')
+}
+
 async function registrarAuditoria(actorUserId: string, action: string, details?: string) {
   const row: AuditLog = {
     id: makeId(),
@@ -279,6 +300,7 @@ function App() {
       setSyncDebug('')
       localStorage.removeItem('last_sync_error')
       await runSync()
+      const pendencias = await db.pending_ops.count()
       if (session) {
         const syncAt = nowIso()
         localStorage.setItem(`last_sync_success_${session.id}`, syncAt)
@@ -295,7 +317,11 @@ function App() {
           await queueOp('pilot_participantes', updated.id, updated)
         }
       }
-      notify('success', 'Sincronizacao feita com sucesso.')
+      if (pendencias > 0) {
+        notify('error', `Sincronizacao parcial: ${pendencias} pendencia(s) ainda precisam ser enviadas.`)
+      } else {
+        notify('success', 'Sincronizacao feita com sucesso.')
+      }
     } catch {
       localStorage.setItem('last_sync_error', syncDebug || 'Falha na sincronizacao')
       notify('error', 'Falha na sincronizacao. Tente novamente.')
@@ -1718,6 +1744,7 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
   const [armazemId, setArmazemId] = useState('')
   const [refs, setRefs] = useState<{[k: string]: BaseEntity[] | Talhao[]}>({})
   const [errors, setErrors] = useState<string[]>([])
+  const [ultimasCargas, setUltimasCargas] = useState<Carga[]>([])
 
   useEffect(() => {
     void Promise.all([
@@ -1730,6 +1757,7 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
     ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes]) => {
       setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
     })
+    void db.cargas.orderBy('created_at').reverse().limit(3).toArray().then(setUltimasCargas)
   }, [])
 
   const sacas = useMemo(() => {
@@ -1754,6 +1782,26 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       onNotify('error', 'Nao foi possivel salvar. Verifique os campos.')
       return
     }
+
+    const brutoAtual = parsePtBrNumber(pesoBruto)
+    const liquidoAtual = parsePtBrNumber(pesoLiquido)
+    const similares = (await db.cargas.toArray()).filter((c) => {
+      if (c.data !== data) return false
+      if (c.placa !== placa) return false
+      const difBruto = Math.abs(c.peso_bruto_kg - brutoAtual)
+      const difLiquido = Math.abs(c.peso_liquido_kg - liquidoAtual)
+      return difBruto <= 100 && difLiquido <= 100
+    })
+    if (similares.length > 0) {
+      const confirmar = window.confirm(
+        `Atencao: encontramos ${similares.length} carga(s) parecida(s) (mesma data/placa e peso proximo). Deseja salvar mesmo assim?`
+      )
+      if (!confirmar) {
+        onNotify('error', 'Salvamento cancelado para evitar duplicidade.')
+        return
+      }
+    }
+
     const now = nowIso()
     const carga: Carga = {
       id: makeId(),
@@ -1764,8 +1812,8 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       produtor_id: produtorId,
       variedade_id: variedadeId,
       armazem_id: armazemId,
-      peso_bruto_kg: parsePtBrNumber(pesoBruto),
-      peso_liquido_kg: parsePtBrNumber(pesoLiquido),
+      peso_bruto_kg: brutoAtual,
+      peso_liquido_kg: liquidoAtual,
       sacas,
       sync_status: 'pending_sync',
       created_at: now,
@@ -1791,9 +1839,12 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
     setPesoBruto('')
     setPesoLiquido('')
     setErrors([])
+    setUltimasCargas(await db.cargas.orderBy('created_at').reverse().limit(3).toArray())
     onSaved()
     onNotify('success', 'Carga salva com sucesso.')
   }
+
+  const placaPorId = new Map(((refs.caminhoes as BaseEntity[]) ?? []).map((c) => [c.id, c.nome]))
 
   return (
     <section className="panel">
@@ -1816,6 +1867,16 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
         </ul>
       )}
       <button onClick={salvar}>Salvar Carga</button>
+      <h3>Ultimas 3 cargas cadastradas</h3>
+      <p className="muted">Confira antes de salvar para evitar duplicidade.</p>
+      <ul>
+        {ultimasCargas.length === 0 && <li>Nenhuma carga cadastrada ainda.</li>}
+        {ultimasCargas.map((c) => (
+          <li key={c.id}>
+            {formatDateBr(c.data)} | Placa: {placaLegivel(c.placa, placaPorId.get(c.placa))} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Sacas: {formatPtBrNumber(c.sacas)}
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }
@@ -1856,12 +1917,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   })
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
-  const statusLabel: Record<Carga['sync_status'], string> = {
-    local_only: 'Somente neste aparelho',
-    pending_sync: 'Pendente de sincronizacao',
-    synced: 'Sincronizado',
-    sync_error: 'Erro de sincronizacao'
-  }
+  const cargasOrdenadas = [...cargas].sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
 
   return (
     <section className="panel">
@@ -1873,13 +1929,13 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
       </div>
       <h3>Produtividade por talhao (sacas/ha)</h3>
       <ul>
-        {porTalhao.map((item) => <li key={item.nome}>{item.nome}: {item.valor.toFixed(2)}</li>)}
+        {porTalhao.map((item, idx) => <li key={`${item.nome}-${idx}`}>{item.nome}: {item.valor.toFixed(2)}</li>)}
       </ul>
       <h3>Ultimas cargas</h3>
       <ul>
-        {cargas.slice(-5).reverse().map((c) => (
+        {cargasOrdenadas.slice(0, 5).map((c) => (
           <li key={c.id}>
-            {c.data} | {placaLegivel(c.placa, placaPorId.get(c.placa))} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {pendingIds.has(c.id) ? statusLabel.pending_sync : statusLabel.synced}
+            {c.data} | {placaLegivel(c.placa, placaPorId.get(c.placa))} | {formatPtBrNumber(c.peso_liquido_kg)} kg | {formatPtBrNumber(c.sacas)} sacas | {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
           </li>
         ))}
       </ul>
@@ -2107,10 +2163,14 @@ function ArmazenagemVendas({
   onSaved: () => void
   onNotify: (type: NoticeType, message: string) => void
 }) {
+  const isFromCurrentUser = useCallback(
+    <T extends { created_by: string }>(row: T) => row.created_by === userId,
+    [userId]
+  )
+
   const [armazens, setArmazens] = useState<BaseEntity[]>([])
   const [produtores, setProdutores] = useState<BaseEntity[]>([])
   const [cargas, setCargas] = useState<Carga[]>([])
-  const [estoques, setEstoques] = useState<EstoqueArmazem[]>([])
   const [movimentos, setMovimentos] = useState<MovimentoEstoque[]>([])
   const [vendas, setVendas] = useState<VendaGrao[]>([])
 
@@ -2154,42 +2214,59 @@ function ArmazenagemVendas({
       db.armazens.toArray(),
       db.produtores.toArray(),
       db.cargas.toArray(),
-      db.estoque_armazem.toArray(),
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray()
-    ]).then(([ars, ps, cs, est, mov, ven]) => {
-      setArmazens(ars)
-      setProdutores(ps)
-      setCargas(cs)
-      setEstoques(est)
-      setMovimentos(mov)
-      setVendas(ven)
+    ]).then(([ars, ps, cs, mov, ven]) => {
+      setArmazens(ars.filter(isFromCurrentUser))
+      setProdutores(ps.filter(isFromCurrentUser))
+      setCargas(cs.filter(isFromCurrentUser))
+      setMovimentos(mov.filter(isFromCurrentUser))
+      setVendas(ven.filter(isFromCurrentUser))
     })
-  }, [refreshTick])
+  }, [isFromCurrentUser, refreshTick])
 
   async function carregar() {
-    const [ars, ps, cs, est, mov, ven] = await Promise.all([
+    const [ars, ps, cs, mov, ven] = await Promise.all([
       db.armazens.toArray(),
       db.produtores.toArray(),
       db.cargas.toArray(),
-      db.estoque_armazem.toArray(),
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray()
     ])
-    setArmazens(ars)
-    setProdutores(ps)
-    setCargas(cs)
-    setEstoques(est)
-    setMovimentos(mov)
-    setVendas(ven)
+    setArmazens(ars.filter(isFromCurrentUser))
+    setProdutores(ps.filter(isFromCurrentUser))
+    setCargas(cs.filter(isFromCurrentUser))
+    setMovimentos(mov.filter(isFromCurrentUser))
+    setVendas(ven.filter(isFromCurrentUser))
   }
 
   const nomeArmazem = new Map(armazens.map((a) => [a.id, a.nome]))
   const nomeProdutor = new Map(produtores.map((p) => [p.id, p.nome]))
-  const saldoPorArmazem = armazens.map((a) => ({
-    armazem: a.nome,
-    saldo: estoques.find((e) => e.armazem_id === a.id)?.saldo_sacas ?? 0
-  }))
+  const saldoBasePorArmazem = new Map<string, number>()
+  for (const c of cargas) {
+    saldoBasePorArmazem.set(c.armazem_id, (saldoBasePorArmazem.get(c.armazem_id) ?? 0) + c.sacas)
+  }
+  for (const v of vendas) {
+    if (v.status !== 'ativa') continue
+    saldoBasePorArmazem.set(v.armazem_cliente_id, (saldoBasePorArmazem.get(v.armazem_cliente_id) ?? 0) - v.sacas)
+  }
+  for (const m of movimentos) {
+    if (isMovimentoAutomaticoDeCarga(m)) continue
+    if (!isAjusteManualValido(m)) continue
+    if (m.tipo === 'entrada' || m.tipo === 'estorno') {
+      saldoBasePorArmazem.set(m.armazem_id, (saldoBasePorArmazem.get(m.armazem_id) ?? 0) + m.sacas)
+    } else if (m.tipo === 'saida') {
+      saldoBasePorArmazem.set(m.armazem_id, (saldoBasePorArmazem.get(m.armazem_id) ?? 0) - m.sacas)
+    }
+  }
+
+  const saldoPorArmazem = armazens
+    .map((a) => ({
+      armazemId: a.id,
+      armazem: a.nome,
+      saldo: Math.max(0, Number((saldoBasePorArmazem.get(a.id) ?? 0).toFixed(4)))
+    }))
+    .sort((a, b) => a.armazem.localeCompare(b.armazem))
   const totalCargaProdutor = vProdutor ? cargas.filter((c) => c.produtor_id === vProdutor).reduce((acc, c) => acc + c.sacas, 0) : 0
   const totalVendaProdutor = vProdutor ? vendas.filter((v) => v.produtor_id === vProdutor && v.status === 'ativa').reduce((acc, v) => acc + v.sacas, 0) : 0
   const saldoDisponivelProdutor = Number((totalCargaProdutor - totalVendaProdutor).toFixed(4))
@@ -2198,7 +2275,7 @@ function ArmazenagemVendas({
   const saldoRestanteVenda = Number.isFinite(sacasSolicitadas)
     ? Number((saldoDisponivelProdutor - sacasSolicitadas).toFixed(4))
     : saldoDisponivelProdutor
-  const totalEstoqueComExclusoes = Number(
+  const totalEstoqueComExclusoesBruto = Number(
     (
       cargas
         .filter((c) => !produtoresExcluidos.includes(c.produtor_id))
@@ -2208,6 +2285,7 @@ function ArmazenagemVendas({
         .reduce((acc, v) => acc + v.sacas, 0)
     ).toFixed(4)
   )
+  const totalEstoqueComExclusoes = Math.max(0, totalEstoqueComExclusoesBruto)
 
   async function salvarVenda() {
     const sacas = parsePtBrNumber(vSacas)
@@ -2220,10 +2298,28 @@ function ArmazenagemVendas({
       onNotify('error', 'Saldo insuficiente deste produtor para venda.')
       return
     }
-    const estoque = await getOrCreateEstoque(vArmazem, userId)
-    if (estoque.saldo_sacas < sacas) {
+    const saldoArmazemSelecionado = saldoPorArmazem.find((s) => s.armazemId === vArmazem)?.saldo ?? 0
+    if (saldoArmazemSelecionado < sacas) {
       onNotify('error', 'Saldo insuficiente para esta venda.')
       return
+    }
+    const similares = vendas.filter((v) => {
+      if (v.status !== 'ativa') return false
+      if (v.data !== vData) return false
+      if (v.produtor_id !== vProdutor) return false
+      if (v.armazem_cliente_id !== vArmazem) return false
+      const difSacas = Math.abs(v.sacas - sacas)
+      const difValor = Math.abs(v.valor_por_saca - valorPorSaca)
+      return difSacas <= 1 && difValor <= 1
+    })
+    if (similares.length > 0) {
+      const confirmar = window.confirm(
+        `Atencao: encontramos ${similares.length} venda(s) parecida(s) para este produtor/armazem na mesma data. Deseja salvar mesmo assim?`
+      )
+      if (!confirmar) {
+        onNotify('error', 'Salvamento cancelado para evitar duplicidade.')
+        return
+      }
     }
     const now = nowIso()
     const venda: VendaGrao = {
@@ -2306,12 +2402,12 @@ function ArmazenagemVendas({
     await aplicarSaldoEstoque(userId, ajArmazem, delta)
     await registrarMovimentoEstoque({
       userId,
-      tipo: 'ajuste',
+      tipo: ajTipo,
       armazemId: ajArmazem,
       sacas,
       origem: 'manual',
       referenciaId: makeId(),
-      motivo: ajMotivo.trim()
+      motivo: `Ajuste manual: ${ajMotivo.trim()}`
     })
     await runSync()
     setAjSacas('')
@@ -2321,11 +2417,71 @@ function ArmazenagemVendas({
     onNotify('success', 'Ajuste de estoque aplicado com sucesso.')
   }
 
-  const vendasFiltradas = vendas.filter((v) => v.data >= filtroInicio && v.data <= filtroFim)
+  async function recalcularSaldosArmazens() {
+    const confirmar = window.confirm('Recalcular saldos agora? Isso vai corrigir residuos antigos e manter apenas o saldo baseado em cargas, vendas e ajustes manuais validos.')
+    if (!confirmar) return
+
+    const baseMap = new Map<string, number>()
+    for (const c of cargas) {
+      baseMap.set(c.armazem_id, (baseMap.get(c.armazem_id) ?? 0) + c.sacas)
+    }
+    for (const v of vendas) {
+      if (v.status !== 'ativa') continue
+      baseMap.set(v.armazem_cliente_id, (baseMap.get(v.armazem_cliente_id) ?? 0) - v.sacas)
+    }
+    for (const m of movimentos) {
+      if (isMovimentoAutomaticoDeCarga(m)) continue
+      if (!isAjusteManualValido(m)) continue
+      if (m.tipo === 'entrada' || m.tipo === 'estorno') {
+        baseMap.set(m.armazem_id, (baseMap.get(m.armazem_id) ?? 0) + m.sacas)
+      } else if (m.tipo === 'saida') {
+        baseMap.set(m.armazem_id, (baseMap.get(m.armazem_id) ?? 0) - m.sacas)
+      }
+    }
+
+    const now = nowIso()
+    for (const armazem of armazens) {
+      const saldo = Math.max(0, Number((baseMap.get(armazem.id) ?? 0).toFixed(4)))
+      const atual = await db.estoque_armazem.where('armazem_id').equals(armazem.id).first()
+      if (atual) {
+        const updated: EstoqueArmazem = {
+          ...atual,
+          saldo_sacas: saldo,
+          updated_at: now,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+        await db.estoque_armazem.put(updated)
+        await queueOp('estoque_armazem', updated.id, updated)
+      } else {
+        const novo: EstoqueArmazem = {
+          id: makeId(),
+          armazem_id: armazem.id,
+          saldo_sacas: saldo,
+          created_at: now,
+          updated_at: now,
+          created_by: userId,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+        await db.estoque_armazem.put(novo)
+        await queueOp('estoque_armazem', novo.id, novo)
+      }
+    }
+
+    await runSync()
+    await carregar()
+    onSaved()
+    onNotify('success', 'Saldos recalculados com sucesso.')
+  }
+
+  const vendasFiltradas = vendas
+    .filter((v) => v.data >= filtroInicio && v.data <= filtroFim)
+    .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
   const movimentosFiltrados = movimentos.filter((m) => {
     const d = localYmdFromValue(m.created_at)
     return d >= filtroInicio && d <= filtroFim
-  })
+  }).sort((a, b) => b.created_at.localeCompare(a.created_at))
 
   const resumoVendas = {
     totalSacas: vendasFiltradas.filter((v) => v.status === 'ativa').reduce((acc, v) => acc + v.sacas, 0),
@@ -2348,7 +2504,16 @@ function ArmazenagemVendas({
   function exportarRelatorioCsv() {
     const cab = ['tipo', 'data', 'produtor', 'armazem', 'sacas', 'valor_rs', 'status', 'motivo']
     const vendasRows = vendasFiltradas.map((v) => ['venda', v.data, nomeProdutor.get(v.produtor_id) ?? v.produtor_id, nomeArmazem.get(v.armazem_cliente_id) ?? v.armazem_cliente_id, v.sacas.toFixed(2), v.valor_total.toFixed(2), v.status, ''])
-    const movRows = movimentosFiltrados.map((m) => ['movimento', localYmdFromValue(m.created_at), nomeArmazem.get(m.armazem_id) ?? m.armazem_id, m.sacas.toFixed(2), '', m.tipo, m.motivo ?? ''])
+    const movRows = movimentosFiltrados.map((m) => [
+      'movimento',
+      localYmdFromValue(m.created_at),
+      '-',
+      nomeArmazem.get(m.armazem_id) ?? m.armazem_id,
+      m.sacas.toFixed(2),
+      '',
+      m.tipo,
+      m.motivo ?? ''
+    ])
     const csv = [cab, ...vendasRows, ...movRows].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
@@ -2461,6 +2626,9 @@ function ArmazenagemVendas({
       <button onClick={() => void aplicarAjusteManual()}>Aplicar ajuste</button>
 
       <h3>Saldo por armazem (sacas)</h3>
+      <div className="actions">
+        <button onClick={() => void recalcularSaldosArmazens()}>Recalcular saldos agora</button>
+      </div>
       <ul>
         {saldoPorArmazem.map((s) => (
           <li key={s.armazem}>{s.armazem}: {formatPtBrNumber(s.saldo)} sacas</li>
@@ -2724,6 +2892,8 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     })
   }, [refreshTick])
 
+  const nomeCaminhao = new Map(((refs.caminhoes as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
+
   const filtered = cargas.filter((c) => {
     if (filters.dataInicio && c.data < filters.dataInicio) return false
     if (filters.dataFim && c.data > filters.dataFim) return false
@@ -2732,23 +2902,16 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     if (filters.talhaoId && c.talhao_id !== filters.talhaoId) return false
     if (filters.variedadeId && c.variedade_id !== filters.variedadeId) return false
     if (filters.armazemId && c.armazem_id !== filters.armazemId) return false
-    if (filters.placa && !c.placa.toLowerCase().includes(filters.placa.toLowerCase())) return false
+    const placaTexto = placaLegivel(c.placa, nomeCaminhao.get(c.placa)).toLowerCase()
+    if (filters.placa && !placaTexto.includes(filters.placa.toLowerCase())) return false
     return true
-  })
+  }).sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
 
   const nomePropriedade = new Map(((refs.propriedades as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
   const nomeTalhao = new Map(((refs.talhoes as Talhao[]) ?? []).map((i) => [i.id, i.nome]))
   const nomeProdutor = new Map(((refs.produtores as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
   const nomeVariedade = new Map(((refs.variedades as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
   const nomeArmazem = new Map(((refs.armazens as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
-  const nomeCaminhao = new Map(((refs.caminhoes as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
-
-  const statusCarga: Record<Carga['sync_status'], string> = {
-    local_only: 'Somente neste aparelho',
-    pending_sync: 'Pendente de sincronizacao',
-    synced: 'Sincronizado',
-    sync_error: 'Erro de sincronizacao'
-  }
 
   function iniciarEdicao(c: Carga) {
     setEditId(c.id)
@@ -2811,10 +2974,10 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
         await aplicarSaldoEstoque(userId, updated.armazem_id, delta)
         await registrarMovimentoEstoque({
           userId,
-          tipo: 'ajuste',
+          tipo: delta > 0 ? 'entrada' : 'saida',
           armazemId: updated.armazem_id,
           sacas: Math.abs(delta),
-          origem: 'manual',
+          origem: 'carga',
           referenciaId: updated.id,
           motivo: 'Ajuste automatico por edicao de carga'
         })
@@ -2824,19 +2987,19 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       await aplicarSaldoEstoque(userId, updated.armazem_id, updated.sacas)
       await registrarMovimentoEstoque({
         userId,
-        tipo: 'ajuste',
+        tipo: 'saida',
         armazemId: armazemAntigo,
         sacas: sacasAntigas,
-        origem: 'manual',
+        origem: 'carga',
         referenciaId: updated.id,
         motivo: 'Transferencia de armazem por edicao de carga'
       })
       await registrarMovimentoEstoque({
         userId,
-        tipo: 'ajuste',
+        tipo: 'entrada',
         armazemId: updated.armazem_id,
         sacas: updated.sacas,
-        origem: 'manual',
+        origem: 'carga',
         referenciaId: updated.id,
         motivo: 'Transferencia de armazem por edicao de carga'
       })
@@ -2859,14 +3022,16 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       await aplicarSaldoEstoque(userId, existing.armazem_id, -existing.sacas)
       await registrarMovimentoEstoque({
         userId,
-        tipo: 'ajuste',
+        tipo: 'saida',
         armazemId: existing.armazem_id,
         sacas: existing.sacas,
-        origem: 'manual',
+        origem: 'carga',
         referenciaId: existing.id,
         motivo: 'Ajuste automatico por exclusao de carga'
       })
     }
+    await runSync()
+    setCargas((prev) => prev.filter((c) => c.id !== cargaId))
     if (editId === cargaId) setEditId('')
     onSaved()
     onNotify('success', 'Carga apagada com sucesso.')
@@ -2911,7 +3076,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {pendingIds.has(c.id) ? statusCarga.pending_sync : statusCarga.synced}
+            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>

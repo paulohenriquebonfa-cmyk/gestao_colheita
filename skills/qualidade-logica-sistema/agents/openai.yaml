@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qualidade de Logica"
+  short_description: "Revisa regras de negocio, sync, validacoes e prevencao de bugs"
+  default_prompt: "Use $qualidade-logica-sistema para revisar e fortalecer a logica desta funcionalidade."
