@@ -1743,6 +1743,13 @@ function NovaCarga({
   onSaved: () => void
   onNotify: (type: NoticeType, message: string) => void
 }) {
+  type SplitItem = {
+    id: string
+    talhaoId: string
+    variedadeId: string
+    pesoLiquido: string
+  }
+
   const [data, setData] = useState(localDateYmd())
   const [placa, setPlaca] = useState('')
   const [pesoBruto, setPesoBruto] = useState('')
@@ -1756,6 +1763,11 @@ function NovaCarga({
   const [errors, setErrors] = useState<string[]>([])
   const [ultimasCargas, setUltimasCargas] = useState<Carga[]>([])
   const [qtdCargasLocal, setQtdCargasLocal] = useState(0)
+  const [modoDividido, setModoDividido] = useState(false)
+  const [splitItems, setSplitItems] = useState<SplitItem[]>([
+    { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' },
+    { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' }
+  ])
 
   const carregarUltimasCargas = useCallback(async () => {
     const [rows, ops] = await Promise.all([db.cargas.toArray(), db.pending_ops.toArray()])
@@ -1796,7 +1808,114 @@ function NovaCarga({
     return Number.isFinite(liquido) ? toSacas(liquido) : 0
   }, [pesoLiquido])
 
+  const totalLiquidoDividido = useMemo(
+    () => splitItems.reduce((acc, item) => acc + (Number.isFinite(parsePtBrNumber(item.pesoLiquido)) ? parsePtBrNumber(item.pesoLiquido) : 0), 0),
+    [splitItems]
+  )
+  const totalSacasDividido = useMemo(() => toSacas(totalLiquidoDividido), [totalLiquidoDividido])
+
+  function adicionarSplitItem() {
+    setSplitItems((prev) => [...prev, { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' }])
+  }
+
+  function removerSplitItem(id: string) {
+    setSplitItems((prev) => {
+      if (prev.length <= 2) return prev
+      return prev.filter((item) => item.id !== id)
+    })
+  }
+
+  function atualizarSplitItem(id: string, patch: Partial<SplitItem>) {
+    setSplitItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+  }
+
   async function salvar() {
+    if (modoDividido) {
+      const brutoTotal = parsePtBrNumber(pesoBruto)
+      if (!data || !placa || !propriedadeId || !produtorId || !armazemId) {
+        onNotify('error', 'Preencha os campos principais da carga.')
+        return
+      }
+      if (!Number.isFinite(brutoTotal) || brutoTotal <= 0) {
+        onNotify('error', 'Informe o peso bruto total da carga.')
+        return
+      }
+      const linhasValidas = splitItems
+        .map((item) => ({
+          ...item,
+          liquidoNum: parsePtBrNumber(item.pesoLiquido)
+        }))
+        .filter((item) => item.talhaoId && item.variedadeId && Number.isFinite(item.liquidoNum) && item.liquidoNum > 0)
+
+      if (linhasValidas.length < 2) {
+        onNotify('error', 'Informe pelo menos 2 linhas validas para dividir a carga.')
+        return
+      }
+      const totalLiquido = linhasValidas.reduce((acc, item) => acc + item.liquidoNum, 0)
+      if (totalLiquido <= 0) {
+        onNotify('error', 'Peso liquido total invalido para divisao.')
+        return
+      }
+      if (totalLiquido > brutoTotal) {
+        onNotify('error', 'Peso liquido total nao pode ser maior que peso bruto total.')
+        return
+      }
+
+      const now = nowIso()
+      let brutoAcumulado = 0
+      for (let i = 0; i < linhasValidas.length; i += 1) {
+        const linha = linhasValidas[i]
+        const proporcao = linha.liquidoNum / totalLiquido
+        const brutoLinha = i === linhasValidas.length - 1
+          ? Number((brutoTotal - brutoAcumulado).toFixed(2))
+          : Number((brutoTotal * proporcao).toFixed(2))
+        brutoAcumulado += brutoLinha
+
+        const carga: Carga = {
+          id: makeId(),
+          data,
+          placa,
+          propriedade_id: propriedadeId,
+          talhao_id: linha.talhaoId,
+          produtor_id: produtorId,
+          variedade_id: linha.variedadeId,
+          armazem_id: armazemId,
+          peso_bruto_kg: brutoLinha,
+          peso_liquido_kg: linha.liquidoNum,
+          sacas: toSacas(linha.liquidoNum),
+          sync_status: 'pending_sync',
+          created_at: now,
+          updated_at: now,
+          created_by: userId,
+          updated_by: userId
+        }
+        await db.cargas.put(carga)
+        await queueOp('cargas', carga.id, carga)
+        await aplicarSaldoEstoque(userId, carga.armazem_id, carga.sacas)
+        await registrarMovimentoEstoque({
+          userId,
+          tipo: 'entrada',
+          armazemId: carga.armazem_id,
+          sacas: carga.sacas,
+          origem: 'carga',
+          referenciaId: carga.id,
+          motivo: 'Carga dividida por talhao/variedade'
+        })
+      }
+      await runSync()
+      setPesoBruto('')
+      setPesoLiquido('')
+      setSplitItems([
+        { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' },
+        { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' }
+      ])
+      setErrors([])
+      await carregarUltimasCargas()
+      onSaved()
+      onNotify('success', 'Carga dividida salva com sucesso.')
+      return
+    }
+
     const erros = validarCarga({
       data,
       placa,
@@ -1884,14 +2003,42 @@ function NovaCarga({
         <input type="date" value={data} onChange={(e) => setData(e.target.value)} />
         <SelectFromList label="Placa (caminhao)" value={placa} onChange={setPlaca} items={(refs.caminhoes as BaseEntity[]) ?? []} />
         <SelectFromList label="Propriedade" value={propriedadeId} onChange={setPropriedadeId} items={(refs.propriedades as BaseEntity[]) ?? []} />
-        <SelectFromList label="Talhao" value={talhaoId} onChange={setTalhaoId} items={(refs.talhoes as Talhao[]) ?? []} />
         <SelectFromList label="Produtor" value={produtorId} onChange={setProdutorId} items={(refs.produtores as BaseEntity[]) ?? []} />
-        <SelectFromList label="Variedade" value={variedadeId} onChange={setVariedadeId} items={(refs.variedades as BaseEntity[]) ?? []} />
         <SelectFromList label="Armazem" value={armazemId} onChange={setArmazemId} items={(refs.armazens as BaseEntity[]) ?? []} />
+        {!modoDividido && <SelectFromList label="Talhao" value={talhaoId} onChange={setTalhaoId} items={(refs.talhoes as Talhao[]) ?? []} />}
+        {!modoDividido && <SelectFromList label="Variedade" value={variedadeId} onChange={setVariedadeId} items={(refs.variedades as BaseEntity[]) ?? []} />}
         <input placeholder="Peso bruto (kg) ex: 21.000" value={pesoBruto} onChange={(e) => setPesoBruto(e.target.value)} />
-        <input placeholder="Peso liquido (kg) ex: 20.500" value={pesoLiquido} onChange={(e) => setPesoLiquido(e.target.value)} />
+        {!modoDividido && <input placeholder="Peso liquido (kg) ex: 20.500" value={pesoLiquido} onChange={(e) => setPesoLiquido(e.target.value)} />}
       </div>
-      <p className="info">Sacas (automatico): <strong>{sacas.toFixed(2)}</strong></p>
+      <label>
+        <input type="checkbox" checked={modoDividido} onChange={(e) => setModoDividido(e.target.checked)} /> Dividir carga por talhao e variedade
+      </label>
+      {!modoDividido && <p className="info">Sacas (automatico): <strong>{sacas.toFixed(2)}</strong></p>}
+      {modoDividido && (
+        <section className="panel">
+          <h3>Divisao da carga</h3>
+          <p className="muted">Preencha cada parte da carga com talhao, variedade e peso liquido.</p>
+          <div className="actions">
+            <button onClick={adicionarSplitItem}>Adicionar linha</button>
+          </div>
+          {splitItems.map((item, idx) => (
+            <div className="grid" key={item.id}>
+              <SelectFromList label={`Talhao (linha ${idx + 1})`} value={item.talhaoId} onChange={(v) => atualizarSplitItem(item.id, { talhaoId: v })} items={(refs.talhoes as Talhao[]) ?? []} />
+              <SelectFromList label={`Variedade (linha ${idx + 1})`} value={item.variedadeId} onChange={(v) => atualizarSplitItem(item.id, { variedadeId: v })} items={(refs.variedades as BaseEntity[]) ?? []} />
+              <input
+                placeholder="Peso liquido desta linha (kg)"
+                value={item.pesoLiquido}
+                onChange={(e) => atualizarSplitItem(item.id, { pesoLiquido: e.target.value })}
+              />
+              <button onClick={() => removerSplitItem(item.id)} disabled={splitItems.length <= 2}>Remover linha</button>
+            </div>
+          ))}
+          <div className="kpis">
+            <article><span>Peso liquido total dividido (kg)</span><strong>{formatPtBrNumber(totalLiquidoDividido)}</strong></article>
+            <article><span>Total em sacas (automatico)</span><strong>{formatPtBrNumber(totalSacasDividido)}</strong></article>
+          </div>
+        </section>
+      )}
       {errors.length > 0 && (
         <ul className="error-list">
           {errors.map((err) => <li key={err}>{err}</li>)}
