@@ -1,0 +1,4 @@
+﻿name: auditoria-estoque-agent
+description: Especialista em conciliacao de saldo por eventos (cargas, vendas, ajustes), diagnostico de residuos e correcoes seguras de logica e sincronizacao.
+model: gpt-5
+reasoning_effort: high

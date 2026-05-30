@@ -391,7 +391,7 @@ function App() {
       </nav>
 
       {tab === 'dashboard' && <Dashboard refreshTick={refreshTick} />}
-      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'analises' && <Analises refreshTick={refreshTick} />}
@@ -1732,7 +1732,17 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
   )
 }
 
-function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () => void; onNotify: (type: NoticeType, message: string) => void }) {
+function NovaCarga({
+  userId,
+  refreshTick,
+  onSaved,
+  onNotify
+}: {
+  userId: string
+  refreshTick: number
+  onSaved: () => void
+  onNotify: (type: NoticeType, message: string) => void
+}) {
   const [data, setData] = useState(localDateYmd())
   const [placa, setPlaca] = useState('')
   const [pesoBruto, setPesoBruto] = useState('')
@@ -1745,6 +1755,27 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
   const [refs, setRefs] = useState<{[k: string]: BaseEntity[] | Talhao[]}>({})
   const [errors, setErrors] = useState<string[]>([])
   const [ultimasCargas, setUltimasCargas] = useState<Carga[]>([])
+  const [qtdCargasLocal, setQtdCargasLocal] = useState(0)
+
+  const carregarUltimasCargas = useCallback(async () => {
+    const [rows, ops] = await Promise.all([db.cargas.toArray(), db.pending_ops.toArray()])
+    const pendentes = ops
+      .filter((op) => op.table === 'cargas' && op.op === 'upsert' && op.payload && typeof op.payload === 'object')
+      .map((op) => op.payload as Carga)
+
+    const mapa = new Map<string, Carga>()
+    for (const c of [...rows, ...pendentes]) {
+      if (!c?.id) continue
+      mapa.set(c.id, c)
+    }
+
+    const base = Array.from(mapa.values())
+    setQtdCargasLocal(base.length)
+    const ultimas = base
+      .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
+      .slice(0, 3)
+    setUltimasCargas(ultimas)
+  }, [])
 
   useEffect(() => {
     void Promise.all([
@@ -1757,8 +1788,8 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
     ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes]) => {
       setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
     })
-    void db.cargas.orderBy('created_at').reverse().limit(3).toArray().then(setUltimasCargas)
-  }, [])
+    void carregarUltimasCargas()
+  }, [carregarUltimasCargas, refreshTick])
 
   const sacas = useMemo(() => {
     const liquido = parsePtBrNumber(pesoLiquido || '0')
@@ -1839,7 +1870,7 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
     setPesoBruto('')
     setPesoLiquido('')
     setErrors([])
-    setUltimasCargas(await db.cargas.orderBy('created_at').reverse().limit(3).toArray())
+    await carregarUltimasCargas()
     onSaved()
     onNotify('success', 'Carga salva com sucesso.')
   }
@@ -1869,6 +1900,7 @@ function NovaCarga({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
       <button onClick={salvar}>Salvar Carga</button>
       <h3>Ultimas 3 cargas cadastradas</h3>
       <p className="muted">Confira antes de salvar para evitar duplicidade.</p>
+      <p className="muted">Cargas encontradas no dispositivo: {qtdCargasLocal}</p>
       <ul>
         {ultimasCargas.length === 0 && <li>Nenhuma carga cadastrada ainda.</li>}
         {ultimasCargas.map((c) => (
@@ -1979,14 +2011,22 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     const items = cargas.filter((c) => c.talhao_id === t.id)
     const mediaKg = items.length > 0 ? items.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / items.length : 0
     const mediaSacas = items.length > 0 ? items.reduce((acc, c) => acc + c.sacas, 0) / items.length : 0
-    return { nome: t.nome, mediaKg, mediaSacas }
+    const totalSacasTalhao = items.reduce((acc, c) => acc + c.sacas, 0)
+    const prodSacasHa = produtividadeSacasPorHa(totalSacasTalhao, t.area_ha)
+    return { nome: t.nome, mediaKg, mediaSacas, prodSacasHa }
   })
 
   const mediasVariedade = variedades.map((v) => {
     const items = cargas.filter((c) => c.variedade_id === v.id)
     const mediaKg = items.length > 0 ? items.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / items.length : 0
     const mediaSacas = items.length > 0 ? items.reduce((acc, c) => acc + c.sacas, 0) / items.length : 0
-    return { nome: v.nome, mediaKg, mediaSacas }
+    const talhoesDaVariedade = new Set(items.map((c) => c.talhao_id))
+    const areaVariedade = talhoes
+      .filter((t) => talhoesDaVariedade.has(t.id))
+      .reduce((acc, t) => acc + t.area_ha, 0)
+    const totalSacasVariedade = items.reduce((acc, c) => acc + c.sacas, 0)
+    const prodSacasHa = produtividadeSacasPorHa(totalSacasVariedade, areaVariedade)
+    return { nome: v.nome, mediaKg, mediaSacas, prodSacasHa }
   })
 
   const entregaPorProdutor = produtores.map((p) => {
@@ -2028,14 +2068,22 @@ function Analises({ refreshTick }: { refreshTick: number }) {
 
   function exportarRelProdCsv() {
     const nomeProd = produtores.find((p) => p.id === produtorRelatorioId)?.nome ?? 'produtor'
-    const cab = ['data', 'armazem', 'peso_liquido_kg', 'sacas']
+    const cab = ['tipo', 'data', 'armazem', 'peso_liquido_kg', 'sacas', 'observacao']
+    const resumo = [
+      ['resumo', 'periodo_inicio', dataRelInicio || '-', '', '', ''],
+      ['resumo', 'periodo_fim', dataRelFim || '-', '', '', ''],
+      ['resumo', 'total_kg_liquido', '', totalRelKg.toFixed(2), '', ''],
+      ['resumo', 'total_sacas', '', '', totalRelSacas.toFixed(2), '']
+    ]
     const linhas = cargasProdutorRel.map((c) => [
+      'detalhe',
       c.data,
       armazemPorId.get(c.armazem_id) ?? c.armazem_id,
       c.peso_liquido_kg.toFixed(2),
-      c.sacas.toFixed(2)
+      c.sacas.toFixed(2),
+      ''
     ])
-    const csv = [cab, ...linhas].map((r) => r.join(';')).join('\n')
+    const csv = [cab, ...resumo, ...linhas].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -2063,7 +2111,7 @@ function Analises({ refreshTick }: { refreshTick: number }) {
     doc.text(`Total entregue: ${formatPtBrNumber(totalRelKg)} kg liquido | ${formatPtBrNumber(totalRelSacas)} sacas`, 14, y)
     y += 9
     doc.setFontSize(12)
-    doc.text('Entregas por armazem', 14, y)
+    doc.text('Detalhamento das Entregas por Armazem', 14, y)
     y += 6
     doc.setFontSize(10)
 
@@ -2081,25 +2129,57 @@ function Analises({ refreshTick }: { refreshTick: number }) {
         }
       }
     }
+    if (y > 250) {
+      doc.addPage()
+      y = 14
+    } else {
+      y += 10
+    }
+    doc.setDrawColor(140, 160, 150)
+    doc.line(14, y, 196, y)
+    y += 8
+    doc.setFontSize(11)
+    doc.text('Conferencia e Assinatura', 14, y)
+    y += 8
+    doc.setFontSize(10)
+    doc.text('Responsavel pelo produtor: ______________________________', 14, y)
+    y += 10
+    doc.text('Representante da fazenda: ________________________________', 14, y)
+    y += 10
+    doc.text('Data da conferencia: ____/____/________', 14, y)
     doc.save(`relatorio-produtor-${nomeProd}.pdf`)
   }
 
   return (
     <section className="panel">
-      <h2>Analises de Medias</h2>
+      <h2>Analises de Medias e Produtividade</h2>
       <div className="kpis">
         <article><span>Media geral (kg/carga)</span><strong>{mediaGeralKg.toFixed(2)}</strong></article>
         <article><span>Media geral (sacas/carga)</span><strong>{mediaGeralSacas.toFixed(2)}</strong></article>
         <article><span>Produtividade geral (sacas/ha)</span><strong>{prodGeral.toFixed(2)}</strong></article>
       </div>
       <h3>Media por talhao</h3>
-      <ul>
-        {mediasTalhao.map((m) => <li key={m.nome}>{m.nome}: {m.mediaKg.toFixed(2)} kg/carga | {m.mediaSacas.toFixed(2)} sacas/carga</li>)}
-      </ul>
+      <div className="analysis-cards">
+        {mediasTalhao.map((m) => (
+          <article className="analysis-card" key={m.nome}>
+            <h4>{m.nome}</h4>
+            <p><strong>{formatPtBrNumber(m.mediaKg)}</strong> kg/carga</p>
+            <p><strong>{formatPtBrNumber(m.mediaSacas)}</strong> sacas/carga</p>
+            <p><strong>{formatPtBrNumber(m.prodSacasHa)}</strong> sacas/ha</p>
+          </article>
+        ))}
+      </div>
       <h3>Media por variedade</h3>
-      <ul>
-        {mediasVariedade.map((m) => <li key={m.nome}>{m.nome}: {m.mediaKg.toFixed(2)} kg/carga | {m.mediaSacas.toFixed(2)} sacas/carga</li>)}
-      </ul>
+      <div className="analysis-cards">
+        {mediasVariedade.map((m) => (
+          <article className="analysis-card" key={m.nome}>
+            <h4>{m.nome}</h4>
+            <p><strong>{formatPtBrNumber(m.mediaKg)}</strong> kg/carga</p>
+            <p><strong>{formatPtBrNumber(m.mediaSacas)}</strong> sacas/carga</p>
+            <p><strong>{formatPtBrNumber(m.prodSacasHa)}</strong> sacas/ha</p>
+          </article>
+        ))}
+      </div>
       <h3>Comparativo de varios talhoes</h3>
       <div className="grid">
         {talhoes.map((t) => (
@@ -2119,13 +2199,16 @@ function Analises({ refreshTick }: { refreshTick: number }) {
         <article><span>Produtividade selecionada (sacas/ha)</span><strong>{prodSel.toFixed(2)}</strong></article>
       </div>
       <h3>Quantidade de graos por produtor</h3>
-      <ul>
+      <div className="analysis-cards">
         {entregaPorProdutor.map((p) => (
-          <li key={p.nome}>
-            {p.nome}: {formatPtBrNumber(p.totalKg)} kg liquido | {formatPtBrNumber(p.totalSacas)} sacas | {p.viagens} viagens
-          </li>
+          <article className="analysis-card" key={p.nome}>
+            <h4>{p.nome}</h4>
+            <p><strong>{formatPtBrNumber(p.totalKg)}</strong> kg liquido</p>
+            <p><strong>{formatPtBrNumber(p.totalSacas)}</strong> sacas</p>
+            <p><strong>{p.viagens}</strong> viagens</p>
+          </article>
         ))}
-      </ul>
+      </div>
       <h3>Relatorio para entregar ao produtor</h3>
       <div className="grid">
         <SelectFromList label="Produtor" value={produtorRelatorioId} onChange={setProdutorRelatorioId} items={produtores} />
@@ -2503,6 +2586,13 @@ function ArmazenagemVendas({
 
   function exportarRelatorioCsv() {
     const cab = ['tipo', 'data', 'produtor', 'armazem', 'sacas', 'valor_rs', 'status', 'motivo']
+    const resumo = [
+      ['resumo', 'periodo_inicio', '', '', filtroInicio, '', '', ''],
+      ['resumo', 'periodo_fim', '', '', filtroFim, '', '', ''],
+      ['resumo', 'total_vendido_sacas', '', '', resumoVendas.totalSacas.toFixed(2), '', '', ''],
+      ['resumo', 'total_vendas_rs', '', '', '', resumoVendas.totalValor.toFixed(2), '', ''],
+      ['resumo', 'valor_medio_por_saca_rs', '', '', '', valorMedioPorSaca.toFixed(2), '', '']
+    ]
     const vendasRows = vendasFiltradas.map((v) => ['venda', v.data, nomeProdutor.get(v.produtor_id) ?? v.produtor_id, nomeArmazem.get(v.armazem_cliente_id) ?? v.armazem_cliente_id, v.sacas.toFixed(2), v.valor_total.toFixed(2), v.status, ''])
     const movRows = movimentosFiltrados.map((m) => [
       'movimento',
@@ -2514,7 +2604,7 @@ function ArmazenagemVendas({
       m.tipo,
       m.motivo ?? ''
     ])
-    const csv = [cab, ...vendasRows, ...movRows].map((r) => r.join(';')).join('\n')
+    const csv = [cab, ...resumo, ...vendasRows, ...movRows].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -2544,7 +2634,7 @@ function ArmazenagemVendas({
     doc.text(`Estoque total (considerando exclusoes): ${formatPtBrNumber(totalEstoqueComExclusoes)} sacas`, 14, y)
     y += 8
     doc.setFontSize(12)
-    doc.text('Saldo por armazem', 14, y)
+    doc.text('Detalhamento de Saldo por Armazem', 14, y)
     y += 6
     doc.setFontSize(10)
     for (const s of saldoPorArmazem) {
@@ -2554,7 +2644,7 @@ function ArmazenagemVendas({
     }
     y += 4
     doc.setFontSize(12)
-    doc.text('Vendas no periodo', 14, y)
+    doc.text('Detalhamento das Vendas no Periodo', 14, y)
     y += 6
     doc.setFontSize(10)
     for (const v of vendasFiltradas) {
@@ -2564,6 +2654,24 @@ function ArmazenagemVendas({
       y += partes.length * 5
       if (y > 280) { doc.addPage(); y = 14 }
     }
+    if (y > 250) {
+      doc.addPage()
+      y = 14
+    } else {
+      y += 10
+    }
+    doc.setDrawColor(140, 160, 150)
+    doc.line(14, y, 196, y)
+    y += 8
+    doc.setFontSize(11)
+    doc.text('Conferencia e Assinatura', 14, y)
+    y += 8
+    doc.setFontSize(10)
+    doc.text('Responsavel pela armazenagem: ____________________________', 14, y)
+    y += 10
+    doc.text('Responsavel pela venda: ___________________________________', 14, y)
+    y += 10
+    doc.text('Data da conferencia: ____/____/________', 14, y)
     doc.save('relatorio-armazenagem-vendas.pdf')
     onNotify('success', 'Relatorio PDF de armazenagem/vendas gerado.')
   }
@@ -2701,16 +2809,33 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
 
   function exportarCsv() {
     const cab = usarCalculoFrete
-      ? ['data', 'placa', 'peso_bruto_kg', 'sacas', 'valor_frete_rs']
-      : ['data', 'placa', 'peso_bruto_kg', 'sacas']
+      ? ['tipo', 'data', 'placa', 'peso_bruto_kg', 'sacas', 'valor_frete_rs']
+      : ['tipo', 'data', 'placa', 'peso_bruto_kg', 'sacas']
+    const resumo = usarCalculoFrete
+      ? [
+          ['resumo', 'periodo_inicio', dataInicio || '-', '', '', ''],
+          ['resumo', 'periodo_fim', dataFim || '-', '', '', ''],
+          ['resumo', 'total_viagens', String(totalViagens), '', '', ''],
+          ['resumo', 'total_bruto_kg', '', totalKgBruto.toFixed(2), '', ''],
+          ['resumo', 'total_sacas', '', '', totalSacas.toFixed(2), ''],
+          ['resumo', 'total_frete_rs', '', '', '', totalFrete.toFixed(2)]
+        ]
+      : [
+          ['resumo', 'periodo_inicio', dataInicio || '-', '', ''],
+          ['resumo', 'periodo_fim', dataFim || '-', '', ''],
+          ['resumo', 'total_viagens', String(totalViagens), '', ''],
+          ['resumo', 'total_bruto_kg', '', totalKgBruto.toFixed(2), ''],
+          ['resumo', 'total_sacas', '', '', totalSacas.toFixed(2)]
+        ]
     const linhas = filtradas.map((c) => [
+      'detalhe',
       c.data,
       placaPorId.get(c.placa) ?? c.placa,
       c.peso_bruto_kg.toFixed(2),
       c.sacas.toFixed(2),
       ...(usarCalculoFrete && Number.isFinite(valorSacaNum) ? [(c.sacas * valorSacaNum).toFixed(2)] : [])
     ])
-    const csv = [cab, ...linhas].map((r) => r.join(';')).join('\n')
+    const csv = [cab, ...resumo, ...linhas].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

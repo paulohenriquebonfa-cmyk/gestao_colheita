@@ -1,0 +1,4 @@
+﻿name: sync-diagnostico-agent
+description: Especialista em fila local, integracao com nuvem, RLS e conciliacao de estados de sincronizacao entre dispositivos.
+model: gpt-5
+reasoning_effort: high

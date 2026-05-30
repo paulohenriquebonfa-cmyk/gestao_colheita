@@ -340,6 +340,35 @@ input[type="checkbox"] {
   border-left: 4px solid #2f5d50;
 }
 
+.analysis-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.72rem;
+  margin: 0.42rem 0 0.9rem;
+}
+
+.analysis-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: #fffffe;
+  padding: 0.74rem 0.8rem;
+}
+
+.analysis-card h4 {
+  margin: 0 0 0.44rem;
+  font-size: 1.02rem;
+  color: #1d4c3d;
+}
+
+.analysis-card p {
+  margin: 0.18rem 0;
+  color: var(--text-soft);
+}
+
+.analysis-card strong {
+  color: var(--text-main);
+}
+
 @media (max-width: 920px) {
   .topbar {
     grid-template-columns: 1fr;
