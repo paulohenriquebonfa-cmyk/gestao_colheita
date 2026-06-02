@@ -1,0 +1,4 @@
+name: deploy-pwa-publicacao-agent
+description: Especialista em publicar mudancas no PWA, validar deploy na Vercel e diferenciar bug real de versao em cache.
+model: gpt-5
+reasoning_effort: medium

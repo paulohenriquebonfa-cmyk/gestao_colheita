@@ -1,0 +1,4 @@
+name: backup-restore-retencao-agent
+description: Especialista em backup, restore, limpeza de dados de teste e retencao segura com foco em confiabilidade e LGPD basica.
+model: gpt-5
+reasoning_effort: high
