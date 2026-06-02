@@ -4,6 +4,7 @@ import { db } from './core/db'
 import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
+import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcProdutividadeVariedadeNoTalhao, totalSacasDivididas } from './core/analises'
 import { validarCarga } from './core/validation'
 import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
@@ -1796,23 +1797,43 @@ function NovaCarga({
       db.produtores.toArray(),
       db.variedades.toArray(),
       db.armazens.toArray(),
-      db.caminhoes.toArray()
-    ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes]) => {
+      db.caminhoes.toArray(),
+      db.cargas.toArray(),
+      db.pending_ops.toArray()
+    ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes, rows, ops]) => {
       setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
+      const pendentes = ops
+        .filter((op) => op.table === 'cargas' && op.op === 'upsert' && op.payload && typeof op.payload === 'object')
+        .map((op) => op.payload as Carga)
+      const mapa = new Map<string, Carga>()
+      for (const c of [...rows, ...pendentes]) {
+        if (!c?.id) continue
+        mapa.set(c.id, c)
+      }
+      const base = Array.from(mapa.values())
+      setQtdCargasLocal(base.length)
+      setUltimasCargas(
+        base
+          .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
+          .slice(0, 3)
+      )
     })
-    void carregarUltimasCargas()
-  }, [carregarUltimasCargas, refreshTick])
+  }, [refreshTick])
 
   const sacas = useMemo(() => {
     const liquido = parsePtBrNumber(pesoLiquido || '0')
     return Number.isFinite(liquido) ? toSacas(liquido) : 0
   }, [pesoLiquido])
 
-  const totalLiquidoDividido = useMemo(
-    () => splitItems.reduce((acc, item) => acc + (Number.isFinite(parsePtBrNumber(item.pesoLiquido)) ? parsePtBrNumber(item.pesoLiquido) : 0), 0),
+  const liquidosDivididosValidos = useMemo(
+    () => splitItems.map((item) => parsePtBrNumber(item.pesoLiquido)).filter((n) => Number.isFinite(n) && n > 0),
     [splitItems]
   )
-  const totalSacasDividido = useMemo(() => toSacas(totalLiquidoDividido), [totalLiquidoDividido])
+  const totalLiquidoDividido = useMemo(
+    () => liquidosDivididosValidos.reduce((acc, n) => acc + n, 0),
+    [liquidosDivididosValidos]
+  )
+  const totalSacasDividido = useMemo(() => totalSacasDivididas(liquidosDivididosValidos), [liquidosDivididosValidos])
 
   function adicionarSplitItem() {
     setSplitItems((prev) => [...prev, { id: makeId(), talhaoId: '', variedadeId: '', pesoLiquido: '' }])
@@ -1860,16 +1881,16 @@ function NovaCarga({
         onNotify('error', 'Peso liquido total nao pode ser maior que peso bruto total.')
         return
       }
+      const brutosDistribuidos = dividirPesoBrutoProporcional(brutoTotal, linhasValidas.map((i) => i.liquidoNum))
+      if (brutosDistribuidos.length !== linhasValidas.length) {
+        onNotify('error', 'Falha ao dividir peso bruto entre as linhas.')
+        return
+      }
 
       const now = nowIso()
-      let brutoAcumulado = 0
       for (let i = 0; i < linhasValidas.length; i += 1) {
         const linha = linhasValidas[i]
-        const proporcao = linha.liquidoNum / totalLiquido
-        const brutoLinha = i === linhasValidas.length - 1
-          ? Number((brutoTotal - brutoAcumulado).toFixed(2))
-          : Number((brutoTotal * proporcao).toFixed(2))
-        brutoAcumulado += brutoLinha
+        const brutoLinha = brutosDistribuidos[i]
 
         const carga: Carga = {
           id: makeId(),
@@ -2206,16 +2227,13 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
   const prodSel = produtividadeSacasPorHa(cargasSelecionadas.reduce((acc, c) => acc + c.sacas, 0), areaSelecionada)
 
   const talhaoParaAnalise = cfgTalhaoId || talhoes[0]?.id || ''
-  const variedadesNoTalhao = variedades.filter((v) =>
-    cargas.some((c) => c.talhao_id === talhaoParaAnalise && c.variedade_id === v.id)
-  )
-  const produtividadeVariedadeNoTalhao = variedadesNoTalhao.map((v) => {
-    const itens = cargas.filter((c) => c.talhao_id === talhaoParaAnalise && c.variedade_id === v.id)
-    const sacasTotal = itens.reduce((acc, c) => acc + c.sacas, 0)
-    const areaCfg = areaConfigMap.get(`${talhaoParaAnalise}::${v.id}`) ?? 0
-    const scHa = produtividadeSacasPorHa(sacasTotal, areaCfg)
-    return { variedadeId: v.id, variedade: v.nome, sacasTotal, areaCfg, scHa }
-  })
+  const produtividadeVariedadeNoTalhao = calcProdutividadeVariedadeNoTalhao(cargas, areasVarTalhao, talhaoParaAnalise).map((r) => ({
+    variedadeId: r.variedade_id,
+    variedade: variedades.find((v) => v.id === r.variedade_id)?.nome ?? r.variedade_id,
+    sacasTotal: r.sacas_total,
+    areaCfg: r.area_ha,
+    scHa: r.sc_ha
+  }))
 
   const areasDoTalhao = areasVarTalhao.filter((a) => a.talhao_id === talhaoParaAnalise)
 
@@ -2513,6 +2531,7 @@ function ArmazenagemVendas({
   const [vArmazem, setVArmazem] = useState('')
   const [vSacas, setVSacas] = useState('')
   const [vValorSaca, setVValorSaca] = useState('')
+  const [vendaFeedback, setVendaFeedback] = useState<Notice>(null)
   const [produtoresExcluidos, setProdutoresExcluidos] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem(`estoque_excluir_produtores_${userId}`)
@@ -2618,75 +2637,91 @@ function ArmazenagemVendas({
   const totalEstoqueComExclusoes = Math.max(0, totalEstoqueComExclusoesBruto)
 
   async function salvarVenda() {
-    const sacas = parsePtBrNumber(vSacas)
-    const valorPorSaca = parsePtBrNumber(vValorSaca)
-    if (!vProdutor || !vArmazem || !vData || !Number.isFinite(sacas) || sacas <= 0 || !Number.isFinite(valorPorSaca) || valorPorSaca <= 0) {
-      onNotify('error', 'Preencha os campos obrigatorios da venda.')
-      return
-    }
-    if (saldoDisponivelProdutor < sacas) {
-      onNotify('error', 'Saldo insuficiente deste produtor para venda.')
-      return
-    }
-    const saldoArmazemSelecionado = saldoPorArmazem.find((s) => s.armazemId === vArmazem)?.saldo ?? 0
-    if (saldoArmazemSelecionado < sacas) {
-      onNotify('error', 'Saldo insuficiente para esta venda.')
-      return
-    }
-    const similares = vendas.filter((v) => {
-      if (v.status !== 'ativa') return false
-      if (v.data !== vData) return false
-      if (v.produtor_id !== vProdutor) return false
-      if (v.armazem_cliente_id !== vArmazem) return false
-      const difSacas = Math.abs(v.sacas - sacas)
-      const difValor = Math.abs(v.valor_por_saca - valorPorSaca)
-      return difSacas <= 1 && difValor <= 1
-    })
-    if (similares.length > 0) {
-      const confirmar = window.confirm(
-        `Atencao: encontramos ${similares.length} venda(s) parecida(s) para este produtor/armazem na mesma data. Deseja salvar mesmo assim?`
-      )
-      if (!confirmar) {
-        onNotify('error', 'Salvamento cancelado para evitar duplicidade.')
+    try {
+      const sacas = parsePtBrNumber(vSacas)
+      const valorPorSaca = parsePtBrNumber(vValorSaca)
+      if (!vProdutor || !vArmazem || !vData || !Number.isFinite(sacas) || sacas <= 0 || !Number.isFinite(valorPorSaca) || valorPorSaca <= 0) {
+        setVendaFeedback({ type: 'error', message: 'Preencha os campos obrigatorios da venda.' })
+        onNotify('error', 'Preencha os campos obrigatorios da venda.')
         return
       }
+      if (saldoDisponivelProdutor < sacas) {
+        setVendaFeedback({ type: 'error', message: 'Saldo insuficiente deste produtor para venda.' })
+        onNotify('error', 'Saldo insuficiente deste produtor para venda.')
+        return
+      }
+      const saldoArmazemSelecionado = saldoPorArmazem.find((s) => s.armazemId === vArmazem)?.saldo ?? 0
+      if (saldoArmazemSelecionado < sacas) {
+        setVendaFeedback({ type: 'error', message: 'Saldo insuficiente para esta venda.' })
+        onNotify('error', 'Saldo insuficiente para esta venda.')
+        return
+      }
+      const similares = vendas.filter((v) => {
+        if (v.status !== 'ativa') return false
+        if (v.data !== vData) return false
+        if (v.produtor_id !== vProdutor) return false
+        if (v.armazem_cliente_id !== vArmazem) return false
+        const difSacas = Math.abs(v.sacas - sacas)
+        const difValor = Math.abs(v.valor_por_saca - valorPorSaca)
+        return difSacas <= 1 && difValor <= 1
+      })
+      if (similares.length > 0) {
+        const confirmar = window.confirm(
+          `Atencao: encontramos ${similares.length} venda(s) parecida(s) para este produtor/armazem na mesma data. Deseja salvar mesmo assim?`
+        )
+        if (!confirmar) {
+          setVendaFeedback({ type: 'error', message: 'Salvamento cancelado para evitar duplicidade.' })
+          onNotify('error', 'Salvamento cancelado para evitar duplicidade.')
+          return
+        }
+      }
+      const now = nowIso()
+      const venda: VendaGrao = {
+        id: makeId(),
+        data: vData,
+        produtor_id: vProdutor,
+        armazem_cliente_id: vArmazem,
+        sacas,
+        valor_por_saca: valorPorSaca,
+        valor_total: Number((sacas * valorPorSaca).toFixed(2)),
+        status: 'ativa',
+        sync_status: 'pending_sync',
+        created_at: now,
+        updated_at: now,
+        created_by: userId,
+        updated_by: userId
+      }
+      await db.venda_grao.put(venda)
+      await queueOp('venda_grao', venda.id, venda)
+      await aplicarSaldoEstoque(userId, vArmazem, -sacas)
+      await registrarMovimentoEstoque({
+        userId,
+        tipo: 'saida',
+        armazemId: vArmazem,
+        sacas,
+        origem: 'venda',
+        referenciaId: venda.id
+      })
+      setVData(localDateYmd())
+      setVProdutor('')
+      setVArmazem('')
+      setVSacas('')
+      setVValorSaca('')
+      await carregar()
+      onSaved()
+      await runSync()
+      setVendaFeedback({ type: 'success', message: 'Venda registrada com sucesso.' })
+      onNotify('success', 'Venda registrada com sucesso.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido ao registrar venda.'
+      if (/sync|nuvem|permission|network|fetch/i.test(message)) {
+        setVendaFeedback({ type: 'success', message: 'Venda salva neste aparelho. A sincronizacao com a nuvem falhou e podera ser refeita depois.' })
+        onNotify('success', 'Venda salva neste aparelho. A sincronizacao com a nuvem falhou e podera ser refeita depois.')
+        return
+      }
+      setVendaFeedback({ type: 'error', message: `Nao foi possivel registrar a venda. Detalhe: ${message}` })
+      onNotify('error', `Nao foi possivel registrar a venda. Detalhe: ${message}`)
     }
-    const now = nowIso()
-    const venda: VendaGrao = {
-      id: makeId(),
-      data: vData,
-      produtor_id: vProdutor,
-      armazem_cliente_id: vArmazem,
-      sacas,
-      valor_por_saca: valorPorSaca,
-      valor_total: Number((sacas * valorPorSaca).toFixed(2)),
-      status: 'ativa',
-      sync_status: 'pending_sync',
-      created_at: now,
-      updated_at: now,
-      created_by: userId,
-      updated_by: userId
-    }
-    await db.venda_grao.put(venda)
-    await queueOp('venda_grao', venda.id, venda)
-    await aplicarSaldoEstoque(userId, vArmazem, -sacas)
-    await registrarMovimentoEstoque({
-      userId,
-      tipo: 'saida',
-      armazemId: vArmazem,
-      sacas,
-      origem: 'venda',
-      referenciaId: venda.id
-    })
-    await runSync()
-    setVData(localDateYmd())
-    setVProdutor('')
-    setVArmazem('')
-    setVSacas('')
-    setVValorSaca('')
-    await carregar()
-    onSaved()
-    onNotify('success', 'Venda registrada com sucesso.')
   }
 
   async function cancelarVenda(venda: VendaGrao) {
@@ -2711,10 +2746,14 @@ function ArmazenagemVendas({
       origem: 'cancelamento',
       referenciaId: venda.id
     })
-    await runSync()
     await carregar()
     onSaved()
-    onNotify('success', 'Venda cancelada e estoque estornado.')
+    try {
+      await runSync()
+      onNotify('success', 'Venda cancelada e estoque estornado.')
+    } catch {
+      onNotify('success', 'Cancelamento salvo neste aparelho. A sincronizacao com a nuvem falhou e podera ser refeita depois.')
+    }
   }
 
   async function aplicarAjusteManual() {
@@ -2967,6 +3006,7 @@ function ArmazenagemVendas({
         <article><span>Valor total da venda (R$)</span><strong>{formatPtBrNumber((Number.isFinite(sacasSolicitadas) ? sacasSolicitadas : 0) * (Number.isFinite(valorPorSacaAtual) ? valorPorSacaAtual : 0))}</strong></article>
       </div>
       <button onClick={() => void salvarVenda()}>Salvar venda</button>
+      {vendaFeedback && <p className={vendaFeedback.type === 'error' ? 'error' : 'info'}>{vendaFeedback.message}</p>}
 
       <h3>Ajuste manual de estoque</h3>
       <div className="grid">
