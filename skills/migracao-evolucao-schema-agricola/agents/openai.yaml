@@ -1,0 +1,4 @@
+name: migracao-evolucao-schema-agricola-agent
+description: Especialista em evolucao segura de schema, policies e sincronizacao offline-first em sistema agricola.
+model: gpt-5
+reasoning_effort: high
