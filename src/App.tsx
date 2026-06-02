@@ -363,8 +363,8 @@ function App() {
       {notice && <div className={`notice ${notice.type}`}>{notice.message}</div>}
       {syncDebug && <div className="notice error">Detalhe tecnico: {syncDebug}</div>}
       {pilotConfig.ativo && (
-        <div className="notice success">
-          Modo piloto (demonstracao gratuita): {pilotConfig.inicio} ate {pilotConfig.fim}
+        <div className="pilot-banner">
+          Modo piloto: {pilotConfig.inicio} ate {pilotConfig.fim}
         </div>
       )}
       <header className="topbar">

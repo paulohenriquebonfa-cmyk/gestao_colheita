@@ -316,6 +316,17 @@ input[type="checkbox"] {
   border-color: #e5b8b6;
 }
 
+.pilot-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid #c8ddd0;
+  border-radius: 12px;
+  background: rgba(229, 239, 233, 0.72);
+  color: #295646;
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
 .frete-filtros,
 .frete-calc {
   background: #f3f8f4;
