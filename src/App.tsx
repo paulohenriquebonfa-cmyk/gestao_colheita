@@ -3158,17 +3158,19 @@ function Frete({
   }, [userId])
 
   useEffect(() => {
-    void carregar()
+    void Promise.resolve().then(() => carregar())
   }, [carregar, refreshTick])
 
   const safraSelecionada = safras.find((s) => s.id === safraId)
 
-  useEffect(() => {
-    if (!safraSelecionada) return
-    setDataInicio(safraSelecionada.data_inicio)
-    setDataFim(safraSelecionada.data_fim)
+  function selecionarSafra(id: string) {
+    setSafraId(id)
+    const safra = safras.find((s) => s.id === id)
+    if (!safra) return
+    setDataInicio(safra.data_inicio)
+    setDataFim(safra.data_fim)
     if (!reciboPagador && propriedades[0]?.nome) setReciboPagador(propriedades[0].nome)
-  }, [propriedades, reciboPagador, safraSelecionada])
+  }
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
   const filtradas = cargas.filter((c) => {
@@ -3194,10 +3196,6 @@ function Frete({
     lancamentos: lancamentosFiltrados
   })
   const dieselValorAtual = calcularValorDiesel(parsePtBrNumber(dieselLitros), parsePtBrNumber(dieselPreco))
-
-  useEffect(() => {
-    setReciboValor(fechamento.valorLiquido ? String(fechamento.valorLiquido) : '')
-  }, [fechamento.valorLiquido])
 
   async function salvarSafra() {
     if (!safraNome.trim() || !safraCultura.trim() || !safraAno.trim() || !safraInicio || !safraFim) {
@@ -3524,6 +3522,10 @@ function Frete({
       onNotify('error', 'Preencha pagador, valor, data, local, recebedor e documento do recibo.')
       return
     }
+    if (valor <= 0) {
+      onNotify('error', 'O valor do recibo deve ser maior que zero.')
+      return
+    }
     const doc = new jsPDF()
     const valorExtensoInfo = `Valor por extenso: ${valorReaisPorExtenso(valor)}`
     let y = 22
@@ -3565,7 +3567,7 @@ function Frete({
 
       <h3>Fechamento</h3>
       <div className="grid frete-filtros">
-        <SelectFromList label="Safra" value={safraId} onChange={setSafraId} items={safras} />
+        <SelectFromList label="Safra" value={safraId} onChange={selecionarSafra} items={safras} />
         <SelectFromList label="Caminhao" value={caminhaoId} onChange={setCaminhaoId} items={caminhoes} />
         <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
         <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
@@ -3624,6 +3626,12 @@ function Frete({
       </div>
       <p className="info">Valor por extenso: {valorReaisPorExtenso(parsePtBrNumber(reciboValor))}</p>
       <div className="actions">
+        <button
+          onClick={() => setReciboValor(fechamento.valorLiquido > 0 ? String(fechamento.valorLiquido) : '')}
+          disabled={fechamento.valorLiquido <= 0}
+        >
+          Usar liquido do fechamento
+        </button>
         <button onClick={exportarReciboPdf}>Gerar recibo separado</button>
       </div>
 
