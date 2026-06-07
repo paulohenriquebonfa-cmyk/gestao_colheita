@@ -165,6 +165,37 @@ create table if not exists area_variedade_talhao (
   sync_status text not null
 );
 
+create table if not exists safras (
+  id uuid primary key,
+  nome text not null,
+  cultura text not null,
+  ano text not null,
+  data_inicio date not null,
+  data_fim date not null,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
+create table if not exists frete_lancamentos (
+  id uuid primary key,
+  safra_id uuid not null references safras(id),
+  caminhao_id uuid not null references caminhoes(id),
+  tipo text not null check (tipo in ('diesel', 'vale')),
+  data date not null,
+  litros numeric,
+  preco_litro numeric,
+  valor_total numeric not null,
+  observacao text,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
 alter table propriedades enable row level security;
 alter table produtores enable row level security;
 alter table variedades enable row level security;
@@ -178,6 +209,8 @@ alter table venda_grao enable row level security;
 alter table pilot_participantes enable row level security;
 alter table feedback_items enable row level security;
 alter table area_variedade_talhao enable row level security;
+alter table safras enable row level security;
+alter table frete_lancamentos enable row level security;
 
 drop policy if exists "farm_read_propriedades" on propriedades;
 drop policy if exists "farm_write_propriedades" on propriedades;
@@ -208,6 +241,10 @@ drop policy if exists "farm_read_feedback_items" on feedback_items;
 drop policy if exists "farm_write_feedback_items" on feedback_items;
 drop policy if exists "farm_read_area_variedade_talhao" on area_variedade_talhao;
 drop policy if exists "farm_write_area_variedade_talhao" on area_variedade_talhao;
+drop policy if exists "farm_read_safras" on safras;
+drop policy if exists "farm_write_safras" on safras;
+drop policy if exists "farm_read_frete_lancamentos" on frete_lancamentos;
+drop policy if exists "farm_write_frete_lancamentos" on frete_lancamentos;
 
 create policy "farm_read_propriedades" on propriedades for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_propriedades" on propriedades for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
@@ -237,3 +274,7 @@ create policy "farm_read_feedback_items" on feedback_items for select to authent
 create policy "farm_write_feedback_items" on feedback_items for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
 create policy "farm_read_area_variedade_talhao" on area_variedade_talhao for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_area_variedade_talhao" on area_variedade_talhao for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+create policy "farm_read_safras" on safras for select to authenticated using (created_by = auth.uid()::text);
+create policy "farm_write_safras" on safras for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+create policy "farm_read_frete_lancamentos" on frete_lancamentos for select to authenticated using (created_by = auth.uid()::text);
+create policy "farm_write_frete_lancamentos" on frete_lancamentos for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);

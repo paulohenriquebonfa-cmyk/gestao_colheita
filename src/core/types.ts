@@ -80,6 +80,39 @@ export interface VendaGrao {
   updated_by: string
 }
 
+export interface Safra {
+  id: string
+  nome: string
+  cultura: string
+  ano: string
+  data_inicio: string
+  data_fim: string
+  sync_status: SyncStatus
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+}
+
+export type TipoFreteLancamento = 'diesel' | 'vale'
+
+export interface FreteLancamento {
+  id: string
+  safra_id: string
+  caminhao_id: string
+  tipo: TipoFreteLancamento
+  data: string
+  litros?: number | null
+  preco_litro?: number | null
+  valor_total: number
+  observacao?: string
+  sync_status: SyncStatus
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+}
+
 export interface PendingOp {
   id: string
   table: string

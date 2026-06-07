@@ -5,9 +5,10 @@ import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcProdutividadeVariedadeNoTalhao, totalSacasDivididas } from './core/analises'
+import { calcularFechamentoFrete, calcularValorDiesel } from './core/frete'
 import { validarCarga } from './core/validation'
 import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
-import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, MovimentoEstoque, PilotParticipant, Talhao, UserRole, VendaGrao } from './core/types'
+import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
 
@@ -391,7 +392,7 @@ function App() {
       {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} />}
-      {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} onNotify={notify} />}
+      {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} onNotify={notify} />}
       {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
       {tab === 'operacao' && <OperacaoSaas user={session} onNotify={notify} />}
@@ -478,7 +479,7 @@ function AssistenteConfiguracao({
   }
 
   async function exportarBackup() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -488,13 +489,15 @@ function AssistenteConfiguracao({
       db.cargas.toArray(),
       db.estoque_armazem.toArray(),
       db.movimento_estoque.toArray(),
-      db.venda_grao.toArray()
+      db.venda_grao.toArray(),
+      db.safras.toArray(),
+      db.frete_lancamentos.toArray()
     ])
 
     const payload = {
       exportado_em: nowIso(),
       versao: 1,
-      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao }
+      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos }
     }
     const stamp = localDateYmd()
     baixarJson(`backup-colheita-${stamp}.json`, payload)
@@ -503,7 +506,7 @@ function AssistenteConfiguracao({
   }
 
   async function salvarSnapshotSemanal() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -513,11 +516,13 @@ function AssistenteConfiguracao({
       db.cargas.toArray(),
       db.estoque_armazem.toArray(),
       db.movimento_estoque.toArray(),
-      db.venda_grao.toArray()
+      db.venda_grao.toArray(),
+      db.safras.toArray(),
+      db.frete_lancamentos.toArray()
     ])
     const payload = {
       snapshot_em: nowIso(),
-      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao }
+      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos }
     }
     localStorage.setItem(`weekly_backup_${user.id}`, JSON.stringify(payload))
     localStorage.setItem(`weekly_backup_at_${user.id}`, nowIso())
@@ -545,6 +550,8 @@ function AssistenteConfiguracao({
           estoque_armazem: EstoqueArmazem[]
           movimento_estoque: MovimentoEstoque[]
           venda_grao: VendaGrao[]
+          safras?: Safra[]
+          frete_lancamentos?: FreteLancamento[]
         }
       }
       await db.propriedades.bulkPut(payload.dados.propriedades ?? [])
@@ -557,6 +564,8 @@ function AssistenteConfiguracao({
       await db.estoque_armazem.bulkPut(payload.dados.estoque_armazem ?? [])
       await db.movimento_estoque.bulkPut(payload.dados.movimento_estoque ?? [])
       await db.venda_grao.bulkPut(payload.dados.venda_grao ?? [])
+      await db.safras.bulkPut(payload.dados.safras ?? [])
+      await db.frete_lancamentos.bulkPut(payload.dados.frete_lancamentos ?? [])
       onRefresh()
       onNotify('success', 'Snapshot semanal restaurado com sucesso.')
     } catch {
@@ -566,7 +575,7 @@ function AssistenteConfiguracao({
 
   async function coletarDadosDoTitular() {
     const filtrar = <T extends { created_by: string }>(rows: T[]) => rows.filter((r) => r.created_by === user.id)
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -576,7 +585,9 @@ function AssistenteConfiguracao({
       db.cargas.toArray(),
       db.estoque_armazem.toArray(),
       db.movimento_estoque.toArray(),
-      db.venda_grao.toArray()
+      db.venda_grao.toArray(),
+      db.safras.toArray(),
+      db.frete_lancamentos.toArray()
     ])
     return {
       propriedades: filtrar(propriedades),
@@ -588,7 +599,9 @@ function AssistenteConfiguracao({
       cargas: filtrar(cargas),
       estoque_armazem: filtrar(estoque_armazem),
       movimento_estoque: filtrar(movimento_estoque),
-      venda_grao: filtrar(venda_grao)
+      venda_grao: filtrar(venda_grao),
+      safras: filtrar(safras),
+      frete_lancamentos: filtrar(frete_lancamentos)
     }
   }
 
@@ -623,6 +636,8 @@ function AssistenteConfiguracao({
           estoque_armazem?: EstoqueArmazem[]
           movimento_estoque?: MovimentoEstoque[]
           venda_grao?: VendaGrao[]
+          safras?: Safra[]
+          frete_lancamentos?: FreteLancamento[]
         }
       }
       if (!json.dados) {
@@ -652,6 +667,8 @@ function AssistenteConfiguracao({
       const estoque = preparar(json.dados.estoque_armazem)
       const movimentos = preparar(json.dados.movimento_estoque)
       const vendas = preparar(json.dados.venda_grao)
+      const safras = preparar(json.dados.safras)
+      const freteLancamentos = preparar(json.dados.frete_lancamentos)
 
       await db.propriedades.bulkPut(propriedades)
       await db.produtores.bulkPut(produtores)
@@ -663,6 +680,8 @@ function AssistenteConfiguracao({
       await db.estoque_armazem.bulkPut(estoque)
       await db.movimento_estoque.bulkPut(movimentos)
       await db.venda_grao.bulkPut(vendas)
+      await db.safras.bulkPut(safras)
+      await db.frete_lancamentos.bulkPut(freteLancamentos)
 
       for (const row of propriedades) await queueOp('propriedades', row.id, row)
       for (const row of produtores) await queueOp('produtores', row.id, row)
@@ -674,6 +693,8 @@ function AssistenteConfiguracao({
       for (const row of estoque) await queueOp('estoque_armazem', row.id, row)
       for (const row of movimentos) await queueOp('movimento_estoque', row.id, row)
       for (const row of vendas) await queueOp('venda_grao', row.id, row)
+      for (const row of safras) await queueOp('safras', row.id, row)
+      for (const row of freteLancamentos) await queueOp('frete_lancamentos', row.id, row)
 
       onRefresh()
       onNotify('success', 'Backup pessoal importado com sucesso. Clique em Sincronizar para enviar para nuvem.')
@@ -710,6 +731,8 @@ function AssistenteConfiguracao({
         }
         await limparPorUsuario('movimento_estoque')
         await limparPorUsuario('venda_grao')
+        await limparPorUsuario('frete_lancamentos')
+        await limparPorUsuario('safras')
         await limparPorUsuario('estoque_armazem')
         await limparPorUsuario('cargas')
         await limparPorUsuario('talhoes')
@@ -728,6 +751,8 @@ function AssistenteConfiguracao({
 
       await purgeLocalByUser(await db.movimento_estoque.toArray(), (id) => db.movimento_estoque.delete(id))
       await purgeLocalByUser(await db.venda_grao.toArray(), (id) => db.venda_grao.delete(id))
+      await purgeLocalByUser(await db.frete_lancamentos.toArray(), (id) => db.frete_lancamentos.delete(id))
+      await purgeLocalByUser(await db.safras.toArray(), (id) => db.safras.delete(id))
       await purgeLocalByUser(await db.estoque_armazem.toArray(), (id) => db.estoque_armazem.delete(id))
       await purgeLocalByUser(await db.cargas.toArray(), (id) => db.cargas.delete(id))
       await purgeLocalByUser(await db.talhoes.toArray(), (id) => db.talhoes.delete(id))
@@ -765,6 +790,8 @@ function AssistenteConfiguracao({
         if (erroMov) throw new Error(`movimento_estoque: ${erroMov.message}`)
         const { error: erroVendas } = await client.from('venda_grao').delete().lt('data', limiteStr)
         if (erroVendas) throw new Error(`venda_grao: ${erroVendas.message}`)
+        const { error: erroFrete } = await client.from('frete_lancamentos').delete().lt('data', limiteStr)
+        if (erroFrete) throw new Error(`frete_lancamentos: ${erroFrete.message}`)
         const { error: erroCargas } = await client.from('cargas').delete().lt('data', limiteStr)
         if (erroCargas) throw new Error(`cargas: ${erroCargas.message}`)
       }
@@ -776,6 +803,10 @@ function AssistenteConfiguracao({
       const vendas = await db.venda_grao.toArray()
       for (const v of vendas) {
         if (v.data < limiteStr) await db.venda_grao.delete(v.id)
+      }
+      const fretes = await db.frete_lancamentos.toArray()
+      for (const f of fretes) {
+        if (f.data < limiteStr) await db.frete_lancamentos.delete(f.id)
       }
       const cargas = await db.cargas.toArray()
       for (const c of cargas) {
@@ -791,7 +822,7 @@ function AssistenteConfiguracao({
   }
 
   async function gerarRelatorioLgpd() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
       db.propriedades.count(),
       db.produtores.count(),
       db.variedades.count(),
@@ -801,7 +832,9 @@ function AssistenteConfiguracao({
       db.cargas.count(),
       db.estoque_armazem.count(),
       db.movimento_estoque.count(),
-      db.venda_grao.count()
+      db.venda_grao.count(),
+      db.safras.count(),
+      db.frete_lancamentos.count()
     ])
     const payload = {
       gerado_em: nowIso(),
@@ -814,7 +847,7 @@ function AssistenteConfiguracao({
         'Cumprimento de obrigacao legal/regulatoria quando aplicavel'
       ],
       inventario_tabelas: {
-        propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao
+        propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos
       },
       direitos_titular_habilitados: [
         'Acesso aos dados (exportacao LGPD)',
@@ -843,6 +876,8 @@ function AssistenteConfiguracao({
           estoque_armazem?: EstoqueArmazem[]
           movimento_estoque?: MovimentoEstoque[]
           venda_grao?: VendaGrao[]
+          safras?: Safra[]
+          frete_lancamentos?: FreteLancamento[]
         }
       }
       if (!json.dados) {
@@ -861,6 +896,8 @@ function AssistenteConfiguracao({
       if (json.dados?.estoque_armazem) await db.estoque_armazem.bulkPut(json.dados.estoque_armazem)
       if (json.dados?.movimento_estoque) await db.movimento_estoque.bulkPut(json.dados.movimento_estoque)
       if (json.dados?.venda_grao) await db.venda_grao.bulkPut(json.dados.venda_grao)
+      if (json.dados?.safras) await db.safras.bulkPut(json.dados.safras)
+      if (json.dados?.frete_lancamentos) await db.frete_lancamentos.bulkPut(json.dados.frete_lancamentos)
       setBackupInfo('Backup importado com sucesso. Clique em Sincronizar para enviar para nuvem.')
       onNotify('success', 'Backup importado com sucesso.')
     } catch {
@@ -901,6 +938,8 @@ function AssistenteConfiguracao({
 
         await limparTabelaNuvem('movimento_estoque')
         await limparTabelaNuvem('venda_grao')
+        await limparTabelaNuvem('frete_lancamentos')
+        await limparTabelaNuvem('safras')
         await limparTabelaNuvem('estoque_armazem')
         await limparTabelaNuvem('cargas')
         await limparTabelaNuvem('talhoes')
@@ -914,6 +953,8 @@ function AssistenteConfiguracao({
       await db.pending_ops.clear()
       await db.movimento_estoque.clear()
       await db.venda_grao.clear()
+      await db.frete_lancamentos.clear()
+      await db.safras.clear()
       await db.estoque_armazem.clear()
       await db.cargas.clear()
       await db.talhoes.clear()
@@ -1169,6 +1210,8 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
       await db.pilot_participantes.clear()
       await db.cargas.clear()
       await db.venda_grao.clear()
+      await db.frete_lancamentos.clear()
+      await db.safras.clear()
       await db.movimento_estoque.clear()
       await db.estoque_armazem.clear()
       await db.talhoes.clear()
@@ -3057,23 +3100,72 @@ function ArmazenagemVendas({
   )
 }
 
-function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; ownerEmail: string; onNotify: (type: NoticeType, message: string) => void }) {
+function Frete({
+  refreshTick,
+  ownerEmail,
+  userId,
+  onNotify
+}: {
+  refreshTick: number
+  ownerEmail: string
+  userId: string
+  onNotify: (type: NoticeType, message: string) => void
+}) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [caminhoes, setCaminhoes] = useState<BaseEntity[]>([])
   const [propriedades, setPropriedades] = useState<BaseEntity[]>([])
+  const [safras, setSafras] = useState<Safra[]>([])
+  const [lancamentos, setLancamentos] = useState<FreteLancamento[]>([])
+  const [safraId, setSafraId] = useState('')
   const [caminhaoId, setCaminhaoId] = useState('')
   const [dataInicio, setDataInicio] = useState('')
   const [dataFim, setDataFim] = useState('')
-  const [usarCalculoFrete, setUsarCalculoFrete] = useState(false)
   const [valorPorSaca, setValorPorSaca] = useState('')
+  const [safraNome, setSafraNome] = useState('')
+  const [safraCultura, setSafraCultura] = useState('')
+  const [safraAno, setSafraAno] = useState(String(new Date().getFullYear()))
+  const [safraInicio, setSafraInicio] = useState('')
+  const [safraFim, setSafraFim] = useState('')
+  const [dieselData, setDieselData] = useState(localDateYmd())
+  const [dieselLitros, setDieselLitros] = useState('')
+  const [dieselPreco, setDieselPreco] = useState('')
+  const [dieselObs, setDieselObs] = useState('')
+  const [valeData, setValeData] = useState(localDateYmd())
+  const [valeValor, setValeValor] = useState('')
+  const [valeObs, setValeObs] = useState('')
+  const [reciboPagador, setReciboPagador] = useState('')
+  const [reciboData, setReciboData] = useState(localDateYmd())
+  const [reciboLocal, setReciboLocal] = useState('')
+  const [reciboRecebedor, setReciboRecebedor] = useState('')
+  const [reciboValor, setReciboValor] = useState('')
 
-  useEffect(() => {
-    void Promise.all([db.cargas.toArray(), db.caminhoes.toArray(), db.propriedades.toArray()]).then(([cs, cms, props]) => {
+  const carregar = useCallback(async () => {
+    const [cs, cms, props, sfs, lancs] = await Promise.all([
+      db.cargas.toArray(),
+      db.caminhoes.toArray(),
+      db.propriedades.toArray(),
+      db.safras.toArray(),
+      db.frete_lancamentos.toArray()
+    ])
       setCargas(cs)
       setCaminhoes(cms)
       setPropriedades(props)
-    })
-  }, [refreshTick])
+    setSafras(sfs.filter((s) => s.created_by === userId).sort((a, b) => b.data_inicio.localeCompare(a.data_inicio)))
+    setLancamentos(lancs.filter((l) => l.created_by === userId))
+  }, [userId])
+
+  useEffect(() => {
+    void carregar()
+  }, [carregar, refreshTick])
+
+  const safraSelecionada = safras.find((s) => s.id === safraId)
+
+  useEffect(() => {
+    if (!safraSelecionada) return
+    setDataInicio(safraSelecionada.data_inicio)
+    setDataFim(safraSelecionada.data_fim)
+    if (!reciboPagador && propriedades[0]?.nome) setReciboPagador(propriedades[0].nome)
+  }, [propriedades, reciboPagador, safraSelecionada])
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
   const filtradas = cargas.filter((c) => {
@@ -3087,37 +3179,215 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
   const totalKgBruto = filtradas.reduce((acc, c) => acc + c.peso_bruto_kg, 0)
   const totalSacas = filtradas.reduce((acc, c) => acc + c.sacas, 0)
   const valorSacaNum = parsePtBrNumber(valorPorSaca)
-  const totalFrete = usarCalculoFrete && Number.isFinite(valorSacaNum) ? totalSacas * valorSacaNum : 0
+  const lancamentosFiltrados = lancamentos
+    .filter((l) => (!safraId || l.safra_id === safraId) && (!caminhaoId || l.caminhao_id === caminhaoId))
+    .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
+  const abastecidas = lancamentosFiltrados.filter((l) => l.tipo === 'diesel')
+  const vales = lancamentosFiltrados.filter((l) => l.tipo === 'vale')
+  const fechamento = calcularFechamentoFrete({
+    totalViagens,
+    totalSacas,
+    valorPorSaca: Number.isFinite(valorSacaNum) ? valorSacaNum : 0,
+    lancamentos: lancamentosFiltrados
+  })
+  const dieselValorAtual = calcularValorDiesel(parsePtBrNumber(dieselLitros), parsePtBrNumber(dieselPreco))
+
+  useEffect(() => {
+    setReciboValor(fechamento.valorLiquido ? String(fechamento.valorLiquido) : '')
+  }, [fechamento.valorLiquido])
+
+  async function salvarSafra() {
+    if (!safraNome.trim() || !safraCultura.trim() || !safraAno.trim() || !safraInicio || !safraFim) {
+      onNotify('error', 'Preencha nome, cultura, ano e periodo da safra.')
+      return
+    }
+    if (safraFim < safraInicio) {
+      onNotify('error', 'Data final da safra nao pode ser menor que a inicial.')
+      return
+    }
+    const now = nowIso()
+    const row: Safra = {
+      id: makeId(),
+      nome: safraNome.trim(),
+      cultura: safraCultura.trim().toLowerCase(),
+      ano: safraAno.trim(),
+      data_inicio: safraInicio,
+      data_fim: safraFim,
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.safras.put(row)
+    await queueOp('safras', row.id, row)
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Safra salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    setSafraId(row.id)
+    setSafraNome('')
+    setSafraCultura('')
+    setSafraAno(String(new Date().getFullYear()))
+    setSafraInicio('')
+    setSafraFim('')
+    await carregar()
+    onNotify('success', 'Safra salva com sucesso.')
+  }
+
+  function validarContextoLancamento() {
+    if (!safraSelecionada || !caminhaoId) {
+      onNotify('error', 'Selecione uma safra e um caminhao.')
+      return false
+    }
+    return true
+  }
+
+  function dataDentroDaSafra(data: string) {
+    if (!safraSelecionada) return false
+    return data >= safraSelecionada.data_inicio && data <= safraSelecionada.data_fim
+  }
+
+  async function salvarDiesel() {
+    if (!validarContextoLancamento()) return
+    const litros = parsePtBrNumber(dieselLitros)
+    const precoLitro = parsePtBrNumber(dieselPreco)
+    if (!dieselData || !Number.isFinite(litros) || litros <= 0 || !Number.isFinite(precoLitro) || precoLitro <= 0) {
+      onNotify('error', 'Informe data, litros e preco por litro validos.')
+      return
+    }
+    if (!dataDentroDaSafra(dieselData)) {
+      onNotify('error', 'A data do diesel deve estar dentro da safra selecionada.')
+      return
+    }
+    const now = nowIso()
+    const row: FreteLancamento = {
+      id: makeId(),
+      safra_id: safraId,
+      caminhao_id: caminhaoId,
+      tipo: 'diesel',
+      data: dieselData,
+      litros,
+      preco_litro: precoLitro,
+      valor_total: calcularValorDiesel(litros, precoLitro),
+      observacao: dieselObs.trim() || undefined,
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.frete_lancamentos.put(row)
+    await queueOp('frete_lancamentos', row.id, row)
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Abastecida salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    setDieselLitros('')
+    setDieselPreco('')
+    setDieselObs('')
+    await carregar()
+    onNotify('success', 'Abastecida de diesel registrada.')
+  }
+
+  async function salvarVale() {
+    if (!validarContextoLancamento()) return
+    const valor = parsePtBrNumber(valeValor)
+    if (!valeData || !Number.isFinite(valor) || valor <= 0) {
+      onNotify('error', 'Informe data e valor do vale.')
+      return
+    }
+    if (!dataDentroDaSafra(valeData)) {
+      onNotify('error', 'A data do vale deve estar dentro da safra selecionada.')
+      return
+    }
+    const now = nowIso()
+    const row: FreteLancamento = {
+      id: makeId(),
+      safra_id: safraId,
+      caminhao_id: caminhaoId,
+      tipo: 'vale',
+      data: valeData,
+      litros: null,
+      preco_litro: null,
+      valor_total: Number(valor.toFixed(2)),
+      observacao: valeObs.trim() || undefined,
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.frete_lancamentos.put(row)
+    await queueOp('frete_lancamentos', row.id, row)
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Vale salvo neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    setValeValor('')
+    setValeObs('')
+    await carregar()
+    onNotify('success', 'Vale registrado.')
+  }
+
+  async function apagarLancamento(id: string) {
+    const ok = window.confirm('Apagar este lancamento de frete?')
+    if (!ok) return
+    await db.frete_lancamentos.delete(id)
+    await db.pending_ops.where('record_id').equals(id).delete()
+    await queueDeleteOp('frete_lancamentos', id)
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Lancamento apagado neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    await carregar()
+    onNotify('success', 'Lancamento apagado.')
+  }
 
   function exportarCsv() {
-    const cab = usarCalculoFrete
-      ? ['tipo', 'data', 'placa', 'peso_bruto_kg', 'sacas', 'valor_frete_rs']
-      : ['tipo', 'data', 'placa', 'peso_bruto_kg', 'sacas']
-    const resumo = usarCalculoFrete
-      ? [
-          ['resumo', 'periodo_inicio', dataInicio || '-', '', '', ''],
-          ['resumo', 'periodo_fim', dataFim || '-', '', '', ''],
-          ['resumo', 'total_viagens', String(totalViagens), '', '', ''],
-          ['resumo', 'total_bruto_kg', '', totalKgBruto.toFixed(2), '', ''],
-          ['resumo', 'total_sacas', '', '', totalSacas.toFixed(2), ''],
-          ['resumo', 'total_frete_rs', '', '', '', totalFrete.toFixed(2)]
-        ]
-      : [
-          ['resumo', 'periodo_inicio', dataInicio || '-', '', ''],
-          ['resumo', 'periodo_fim', dataFim || '-', '', ''],
-          ['resumo', 'total_viagens', String(totalViagens), '', ''],
-          ['resumo', 'total_bruto_kg', '', totalKgBruto.toFixed(2), ''],
-          ['resumo', 'total_sacas', '', '', totalSacas.toFixed(2)]
-        ]
+    const cab = ['tipo', 'data', 'descricao', 'placa', 'peso_bruto_kg', 'sacas', 'litros', 'preco_litro_rs', 'valor_rs']
+    const resumo = [
+      ['resumo', 'safra', safraSelecionada?.nome ?? '-', '', '', '', '', '', ''],
+      ['resumo', 'cultura', safraSelecionada?.cultura ?? '-', '', '', '', '', '', ''],
+      ['resumo', 'ano', safraSelecionada?.ano ?? '-', '', '', '', '', '', ''],
+      ['resumo', 'periodo_inicio', dataInicio || '-', '', '', '', '', '', ''],
+      ['resumo', 'periodo_fim', dataFim || '-', '', '', '', '', '', ''],
+      ['resumo', 'total_viagens', String(totalViagens), '', '', '', '', '', ''],
+      ['resumo', 'total_bruto_kg', '', '', totalKgBruto.toFixed(2), '', '', '', ''],
+      ['resumo', 'total_sacas', '', '', '', fechamento.totalSacas.toFixed(2), '', '', ''],
+      ['resumo', 'valor_por_saca_rs', '', '', '', '', '', '', fechamento.valorPorSaca.toFixed(2)],
+      ['resumo', 'frete_bruto_rs', '', '', '', '', '', '', fechamento.freteBruto.toFixed(2)],
+      ['resumo', 'total_diesel_rs', '', '', '', '', '', '', fechamento.totalDiesel.toFixed(2)],
+      ['resumo', 'total_vales_rs', '', '', '', '', '', '', fechamento.totalVales.toFixed(2)],
+      ['resumo', 'valor_liquido_rs', '', '', '', '', '', '', fechamento.valorLiquido.toFixed(2)]
+    ]
     const linhas = filtradas.map((c) => [
-      'detalhe',
+      'viagem',
       c.data,
+      'Carga transportada',
       placaPorId.get(c.placa) ?? c.placa,
       c.peso_bruto_kg.toFixed(2),
       c.sacas.toFixed(2),
-      ...(usarCalculoFrete && Number.isFinite(valorSacaNum) ? [(c.sacas * valorSacaNum).toFixed(2)] : [])
+      '',
+      '',
+      (c.sacas * fechamento.valorPorSaca).toFixed(2)
     ])
-    const csv = [cab, ...resumo, ...linhas].map((r) => r.join(';')).join('\n')
+    const lancRows = lancamentosFiltrados.map((l) => [
+      l.tipo,
+      l.data,
+      l.observacao ?? (l.tipo === 'diesel' ? 'Abastecida de diesel' : 'Vale em dinheiro'),
+      placaPorId.get(l.caminhao_id) ?? l.caminhao_id,
+      '',
+      '',
+      l.litros?.toFixed(2) ?? '',
+      l.preco_litro?.toFixed(2) ?? '',
+      l.valor_total.toFixed(2)
+    ])
+    const csv = [cab, ...resumo, ...linhas, ...lancRows].map((r) => r.join(';')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -3128,17 +3398,23 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
     onNotify('success', 'Relatorio CSV gerado com sucesso.')
   }
 
-  function exportarPdf() {
+  function ensureSpace(doc: jsPDF, y: number, needed = 18) {
+    if (y + needed <= 280) return y
+    doc.addPage()
+    return 14
+  }
+
+  function exportarRelatorioConferenciaPdf() {
     const doc = new jsPDF()
     const placaSelecionada = caminhaoId ? (placaPorId.get(caminhaoId) ?? caminhaoId) : 'Todos'
     const fazendaNome = propriedades.length > 0 ? propriedades[0].nome : 'Fazenda nao informada'
     let y = 14
     const dataEmissao = formatDateTimeBrWithZone(nowIso())
     doc.setFontSize(17)
-    doc.text('RELATORIO DE FRETE', 14, y)
+    doc.text('RELATORIO DE CONFERENCIA DE FRETE', 14, y)
     y += 8
     doc.setFontSize(11)
-    doc.text('Documento de conferencia para transportador e contratante', 14, y)
+    doc.text('Documento para conferencia de contas antes do pagamento. Nao e recibo de quitacao.', 14, y)
     y += 6
     doc.text(`Data/Hora local: ${dataEmissao}`, 14, y)
     y += 6
@@ -3147,6 +3423,8 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
     doc.text(`Responsavel: ${ownerEmail}`, 14, y)
     y += 6
     doc.text(`Caminhao (placa): ${placaSelecionada}`, 14, y)
+    y += 6
+    doc.text(`Safra: ${safraSelecionada ? `${safraSelecionada.nome} | ${safraSelecionada.cultura} ${safraSelecionada.ano}` : '-'}`, 14, y)
     y += 6
     doc.text(`Periodo: ${dataInicio ? formatDateBr(dataInicio) : '-'} ate ${dataFim ? formatDateBr(dataFim) : '-'}`, 14, y)
     y += 6
@@ -3163,15 +3441,16 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
     doc.text(`Peso bruto total transportado: ${formatPtBrNumber(totalKgBruto)} kg`, 14, y)
     y += 6
     doc.text(`Total em sacas: ${formatPtBrNumber(totalSacas)} sacas`, 14, y)
-    y += 8
-    if (usarCalculoFrete && Number.isFinite(valorSacaNum)) {
-      doc.text(`Valor por saca: R$ ${formatPtBrNumber(valorSacaNum)}`, 14, y)
-      y += 6
-      doc.text(`Valor total do frete: R$ ${formatPtBrNumber(totalFrete)}`, 14, y)
-      y += 6
-    }
-    doc.setFontSize(10)
-    doc.text('Observacao: o peso usado para frete neste relatorio e o PESO BRUTO.', 14, y)
+    y += 6
+    doc.text(`Valor por saca: R$ ${formatPtBrNumber(fechamento.valorPorSaca)}`, 14, y)
+    y += 6
+    doc.text(`Frete bruto: R$ ${formatPtBrNumber(fechamento.freteBruto)}`, 14, y)
+    y += 6
+    doc.text(`Diesel: R$ ${formatPtBrNumber(fechamento.totalDiesel)} | Vales: R$ ${formatPtBrNumber(fechamento.totalVales)}`, 14, y)
+    y += 6
+    doc.text(`Valor liquido: R$ ${formatPtBrNumber(fechamento.valorLiquido)}`, 14, y)
+    y += 6
+    doc.text(`Litros diesel: ${formatPtBrNumber(fechamento.totalLitrosDiesel)} | Preco medio diesel: R$ ${formatPtBrNumber(fechamento.precoMedioDiesel)}`, 14, y)
     y += 10
 
     doc.setFontSize(12)
@@ -3183,81 +3462,179 @@ function Frete({ refreshTick, ownerEmail, onNotify }: { refreshTick: number; own
       doc.text('Nenhum registro encontrado.', 14, y)
     } else {
       for (const c of filtradas) {
-        const linha = `${c.data} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(c.sacas)} sacas`
-        const linhaFrete = usarCalculoFrete && Number.isFinite(valorSacaNum)
-          ? `${linha} | frete R$ ${formatPtBrNumber(c.sacas * valorSacaNum)}`
-          : linha
+        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(c.sacas)} sacas | frete R$ ${formatPtBrNumber(c.sacas * fechamento.valorPorSaca)}`
         const partes = doc.splitTextToSize(linhaFrete, 180)
+        y = ensureSpace(doc, y, partes.length * 5 + 4)
         doc.text(partes, 14, y)
         y += partes.length * 5
-        if (y > 280) {
-          doc.addPage()
-          y = 14
-        }
       }
     }
 
-    if (y > 250) {
-      doc.addPage()
-      y = 14
+    y = ensureSpace(doc, y, 26)
+    y += 8
+    doc.setFontSize(12)
+    doc.text('Abastecidas de Diesel', 14, y)
+    y += 6
+    doc.setFontSize(10)
+    if (abastecidas.length === 0) {
+      doc.text('Nenhuma abastecida registrada.', 14, y)
+      y += 5
     } else {
-      y += 12
+      for (const l of abastecidas) {
+        const linha = `${formatDateBr(l.data)} | ${formatPtBrNumber(l.litros ?? 0)} litros | R$ ${formatPtBrNumber(l.preco_litro ?? 0)}/litro | total R$ ${formatPtBrNumber(l.valor_total)}${l.observacao ? ` | ${l.observacao}` : ''}`
+        const partes = doc.splitTextToSize(linha, 180)
+        y = ensureSpace(doc, y, partes.length * 5 + 4)
+        doc.text(partes, 14, y)
+        y += partes.length * 5
+      }
     }
 
-    doc.setDrawColor(140, 160, 150)
-    doc.line(14, y, 196, y)
+    y = ensureSpace(doc, y, 26)
     y += 8
-    doc.setFontSize(11)
-    doc.text('Conferencia e Assinatura', 14, y)
-    y += 8
+    doc.setFontSize(12)
+    doc.text('Vales em Dinheiro', 14, y)
+    y += 6
     doc.setFontSize(10)
-    doc.text('Responsavel pelo frete: _________________________________', 14, y)
-    y += 10
-    doc.text('Contratante / Fazenda: ___________________________________', 14, y)
-    y += 10
-    doc.text('Data da conferencia: ____/____/________', 14, y)
+    if (vales.length === 0) {
+      doc.text('Nenhum vale registrado.', 14, y)
+    } else {
+      for (const l of vales) {
+        const linha = `${formatDateBr(l.data)} | R$ ${formatPtBrNumber(l.valor_total)}${l.observacao ? ` | ${l.observacao}` : ''}`
+        const partes = doc.splitTextToSize(linha, 180)
+        y = ensureSpace(doc, y, partes.length * 5 + 4)
+        doc.text(partes, 14, y)
+        y += partes.length * 5
+      }
+    }
 
-    doc.save('relatorio-frete.pdf')
-    onNotify('success', 'Relatorio PDF gerado com sucesso.')
+    doc.save('relatorio-conferencia-frete.pdf')
+    onNotify('success', 'Relatorio de conferencia gerado com sucesso.')
+  }
+
+  function exportarReciboPdf() {
+    if (!safraSelecionada || !caminhaoId) {
+      onNotify('error', 'Selecione safra e caminhao para gerar o recibo.')
+      return
+    }
+    const valor = parsePtBrNumber(reciboValor)
+    if (!reciboPagador.trim() || !reciboData || !reciboLocal.trim() || !reciboRecebedor.trim() || !Number.isFinite(valor)) {
+      onNotify('error', 'Preencha pagador, valor, data, local e recebedor do recibo.')
+      return
+    }
+    const doc = new jsPDF()
+    const valorExtensoInfo = 'Valor por extenso: ________________________________________________'
+    let y = 22
+    doc.setFontSize(17)
+    doc.text('RECIBO DE PAGAMENTO DE FRETE', 14, y)
+    y += 14
+    doc.setFontSize(12)
+    const texto = `Recebi de ${reciboPagador.trim()} a quantia de R$ ${formatPtBrNumber(valor)} no dia ${formatDateBr(reciboData)} em ${reciboLocal.trim()}, referente a frete de colheita de ${safraSelecionada.cultura} da safra ${safraSelecionada.ano}.`
+    const partes = doc.splitTextToSize(texto, 180)
+    doc.text(partes, 14, y)
+    y += partes.length * 7 + 8
+    doc.text(`Caminhao/placa: ${placaPorId.get(caminhaoId) ?? caminhaoId}`, 14, y)
+    y += 8
+    doc.text(`Recebedor: ${reciboRecebedor.trim()}`, 14, y)
+    y += 12
+    doc.text(valorExtensoInfo, 14, y)
+    y += 26
+    doc.text('Assinatura do recebedor: __________________________________________', 14, y)
+    y += 14
+    doc.text('Documento: _______________________________________________________', 14, y)
+    doc.save('recibo-pagamento-frete.pdf')
+    onNotify('success', 'Recibo de pagamento gerado com sucesso.')
   }
 
   return (
     <section className="panel">
-      <h2>Relatorio de Frete por Caminhao</h2>
+      <h2>Frete por Safra e Caminhao</h2>
+      <h3>Cadastro de Safra</h3>
+      <div className="grid">
+        <input placeholder="Nome da safra (ex: Safra Soja 2026)" value={safraNome} onChange={(e) => setSafraNome(e.target.value)} />
+        <input placeholder="Cultura (soja, milho...)" value={safraCultura} onChange={(e) => setSafraCultura(e.target.value)} />
+        <input placeholder="Ano da safra" value={safraAno} onChange={(e) => setSafraAno(e.target.value)} />
+        <input type="date" value={safraInicio} onChange={(e) => setSafraInicio(e.target.value)} />
+        <input type="date" value={safraFim} onChange={(e) => setSafraFim(e.target.value)} />
+      </div>
+      <div className="actions">
+        <button onClick={() => void salvarSafra()}>Salvar safra</button>
+      </div>
+
+      <h3>Fechamento</h3>
       <div className="grid frete-filtros">
+        <SelectFromList label="Safra" value={safraId} onChange={setSafraId} items={safras} />
         <SelectFromList label="Caminhao" value={caminhaoId} onChange={setCaminhaoId} items={caminhoes} />
         <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
         <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
-      </div>
-      <div className="row frete-calc">
-        <label>
-          <input type="checkbox" checked={usarCalculoFrete} onChange={(e) => setUsarCalculoFrete(e.target.checked)} /> Calcular frete
-        </label>
-        {usarCalculoFrete && (
-          <input
-            placeholder="Valor por saca (R$)"
-            value={valorPorSaca}
-            onChange={(e) => setValorPorSaca(e.target.value)}
-          />
-        )}
+        <input placeholder="Valor por saca (R$)" value={valorPorSaca} onChange={(e) => setValorPorSaca(e.target.value)} />
       </div>
       <div className="kpis">
         <article><span>Total de viagens</span><strong>{totalViagens}</strong></article>
         <article><span>Total bruto (kg)</span><strong>{formatPtBrNumber(totalKgBruto)}</strong></article>
         <article><span>Total em sacas</span><strong>{formatPtBrNumber(totalSacas)}</strong></article>
-        {usarCalculoFrete && Number.isFinite(valorSacaNum) && (
-          <article><span>Total frete (R$)</span><strong>{formatPtBrNumber(totalFrete)}</strong></article>
-        )}
+        <article><span>Frete bruto (R$)</span><strong>{formatPtBrNumber(fechamento.freteBruto)}</strong></article>
+        <article><span>Diesel (R$)</span><strong>{formatPtBrNumber(fechamento.totalDiesel)}</strong></article>
+        <article><span>Vales (R$)</span><strong>{formatPtBrNumber(fechamento.totalVales)}</strong></article>
+        <article><span>Liquido a pagar (R$)</span><strong>{formatPtBrNumber(fechamento.valorLiquido)}</strong></article>
+        <article><span>Preco medio diesel (R$/L)</span><strong>{formatPtBrNumber(fechamento.precoMedioDiesel)}</strong></article>
       </div>
+
+      <h3>Abastecida de diesel</h3>
+      <div className="grid">
+        <input type="date" value={dieselData} onChange={(e) => setDieselData(e.target.value)} />
+        <input placeholder="Litros" value={dieselLitros} onChange={(e) => setDieselLitros(e.target.value)} />
+        <input placeholder="Preco por litro (R$)" value={dieselPreco} onChange={(e) => setDieselPreco(e.target.value)} />
+        <input placeholder="Observacao" value={dieselObs} onChange={(e) => setDieselObs(e.target.value)} />
+      </div>
+      <p className="info">Total desta abastecida: R$ {formatPtBrNumber(dieselValorAtual)}</p>
+      <div className="actions">
+        <button onClick={() => void salvarDiesel()}>Registrar diesel</button>
+      </div>
+
+      <h3>Vale em dinheiro</h3>
+      <div className="grid">
+        <input type="date" value={valeData} onChange={(e) => setValeData(e.target.value)} />
+        <input placeholder="Valor do vale (R$)" value={valeValor} onChange={(e) => setValeValor(e.target.value)} />
+        <input placeholder="Observacao" value={valeObs} onChange={(e) => setValeObs(e.target.value)} />
+      </div>
+      <div className="actions">
+        <button onClick={() => void salvarVale()}>Registrar vale</button>
+      </div>
+
       <div className="actions frete-actions">
         <button onClick={exportarCsv}>Exportar CSV</button>
-        <button onClick={exportarPdf}>Exportar PDF</button>
+        <button onClick={exportarRelatorioConferenciaPdf}>Gerar relatorio de conferencia</button>
       </div>
+
+      <h3>Recibo de pagamento</h3>
+      <div className="grid">
+        <input placeholder="Recebi de (pagador)" value={reciboPagador} onChange={(e) => setReciboPagador(e.target.value)} />
+        <input placeholder="Valor recebido (R$)" value={reciboValor} onChange={(e) => setReciboValor(e.target.value)} />
+        <input type="date" value={reciboData} onChange={(e) => setReciboData(e.target.value)} />
+        <input placeholder="Local" value={reciboLocal} onChange={(e) => setReciboLocal(e.target.value)} />
+        <input placeholder="Recebedor / caminhoneiro" value={reciboRecebedor} onChange={(e) => setReciboRecebedor(e.target.value)} />
+      </div>
+      <div className="actions">
+        <button onClick={exportarReciboPdf}>Gerar recibo separado</button>
+      </div>
+
+      <h3>Abastecidas e vales</h3>
+      <ul>
+        {lancamentosFiltrados.length === 0 && <li>Nenhum diesel ou vale registrado para este filtro.</li>}
+        {lancamentosFiltrados.map((l) => (
+          <li key={l.id}>
+            {formatDateBr(l.data)} | {l.tipo === 'diesel' ? `Diesel: ${formatPtBrNumber(l.litros ?? 0)} L x R$ ${formatPtBrNumber(l.preco_litro ?? 0)}` : 'Vale'} | R$ {formatPtBrNumber(l.valor_total)}{l.observacao ? ` | ${l.observacao}` : ''}
+            <button onClick={() => void apagarLancamento(l.id)}>Apagar</button>
+          </li>
+        ))}
+      </ul>
+
+      <h3>Viagens no periodo</h3>
       <ul className="frete-lista">
         {filtradas.map((c) => (
           <li key={c.id}>
             {c.data} | {placaPorId.get(c.placa) ?? c.placa} | {formatPtBrNumber(c.peso_bruto_kg)} kg bruto | {formatPtBrNumber(c.sacas)} sacas
-            {usarCalculoFrete && Number.isFinite(valorSacaNum) ? ` | frete R$ ${formatPtBrNumber(c.sacas * valorSacaNum)}` : ''}
+            {Number.isFinite(valorSacaNum) ? ` | frete R$ ${formatPtBrNumber(c.sacas * fechamento.valorPorSaca)}` : ''}
           </li>
         ))}
       </ul>

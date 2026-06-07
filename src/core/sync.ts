@@ -2,7 +2,7 @@ import { db } from './db'
 import { hasSupabase, supabase } from './supabase'
 import type { BaseEntity, Carga, PendingOp, Talhao } from './types'
 
-const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items', 'area_variedade_talhao'] as const
+const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items', 'area_variedade_talhao', 'safras', 'frete_lancamentos'] as const
 
 function normalizePayloadForCloud(table: string, payload: Record<string, unknown>) {
   if (table !== 'pilot_participantes') return payload
@@ -65,6 +65,26 @@ async function pushOp(op: PendingOp) {
     const deps: Array<{ table: 'produtores' | 'armazens'; row: BaseEntity | undefined }> = [
       { table: 'produtores', row: produtor },
       { table: 'armazens', row: armazem }
+    ]
+    for (const dep of deps) {
+      if (!dep.row) continue
+      const { error: depError } = await supabase.from(dep.table).upsert(dep.row as never, { onConflict: 'id' })
+      if (depError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: `dependencia ${dep.table}: ${depError.message}`
+        })
+        return false
+      }
+    }
+  }
+  if (table === 'frete_lancamentos') {
+    const lancamento = op.payload as { safra_id: string; caminhao_id: string }
+    const safra = await db.safras.get(lancamento.safra_id)
+    const caminhao = await db.caminhoes.get(lancamento.caminhao_id)
+    const deps: Array<{ table: 'safras' | 'caminhoes'; row: BaseEntity | undefined }> = [
+      { table: 'safras', row: safra },
+      { table: 'caminhoes', row: caminhao }
     ]
     for (const dep of deps) {
       if (!dep.row) continue
@@ -141,6 +161,10 @@ async function pushOp(op: PendingOp) {
     await db.feedback_items.update(op.record_id, { sync_status: 'synced' })
   } else if (op.table === 'area_variedade_talhao') {
     await db.area_variedade_talhao.update(op.record_id, { sync_status: 'synced' })
+  } else if (op.table === 'safras') {
+    await db.safras.update(op.record_id, { sync_status: 'synced' })
+  } else if (op.table === 'frete_lancamentos') {
+    await db.frete_lancamentos.update(op.record_id, { sync_status: 'synced' })
   } else {
     const tableMap: Record<string, { update: (id: string, data: Partial<BaseEntity>) => Promise<number> }> = {
       propriedades: db.propriedades,
@@ -174,7 +198,9 @@ async function pullFromCloud() {
     venda_grao: [],
     pilot_participantes: [],
     feedback_items: [],
-    area_variedade_talhao: []
+    area_variedade_talhao: [],
+    safras: [],
+    frete_lancamentos: []
   }
 
   for (const table of TABLES) {
@@ -204,6 +230,8 @@ async function pullFromCloud() {
   await db.pilot_participantes.clear()
   await db.feedback_items.clear()
   await db.area_variedade_talhao.clear()
+  await db.safras.clear()
+  await db.frete_lancamentos.clear()
 
   await db.propriedades.bulkPut(pulledData.propriedades as unknown as BaseEntity[])
   await db.produtores.bulkPut(pulledData.produtores as unknown as BaseEntity[])
@@ -218,6 +246,8 @@ async function pullFromCloud() {
   await db.pilot_participantes.bulkPut(pulledData.pilot_participantes as never[])
   await db.feedback_items.bulkPut(pulledData.feedback_items as never[])
   await db.area_variedade_talhao.bulkPut(pulledData.area_variedade_talhao as never[])
+  await db.safras.bulkPut(pulledData.safras as never[])
+  await db.frete_lancamentos.bulkPut(pulledData.frete_lancamentos as never[])
 }
 
 export async function runSync() {
