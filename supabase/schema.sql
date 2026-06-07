@@ -278,3 +278,6 @@ create policy "farm_read_safras" on safras for select to authenticated using (cr
 create policy "farm_write_safras" on safras for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
 create policy "farm_read_frete_lancamentos" on frete_lancamentos for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_frete_lancamentos" on frete_lancamentos for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+
+grant select, insert, update, delete on table safras to authenticated;
+grant select, insert, update, delete on table frete_lancamentos to authenticated;
