@@ -52,7 +52,14 @@ export const formatDateTimeBrWithZone = (value?: string | null) => {
 }
 
 export const parsePtBrNumber = (value: string) => {
-  const normalized = value.replace(/\./g, '').replace(',', '.').trim()
+  const trimmed = value.trim()
+  const hasComma = trimmed.includes(',')
+  const hasDot = trimmed.includes('.')
+  const normalized = hasComma
+    ? trimmed.replace(/\./g, '').replace(',', '.')
+    : hasDot && /^\d+\.\d{1,2}$/.test(trimmed)
+      ? trimmed
+      : trimmed.replace(/\./g, '')
   const n = Number(normalized)
   return Number.isFinite(n) ? n : NaN
 }
