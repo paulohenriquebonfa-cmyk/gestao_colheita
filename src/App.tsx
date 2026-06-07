@@ -8,6 +8,7 @@ import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcPro
 import { calcularFechamentoFrete, calcularValorDiesel } from './core/frete'
 import { validarCarga } from './core/validation'
 import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
+import { valorReaisPorExtenso } from './core/valorExtenso'
 import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
@@ -3138,6 +3139,8 @@ function Frete({
   const [reciboLocal, setReciboLocal] = useState('')
   const [reciboRecebedor, setReciboRecebedor] = useState('')
   const [reciboValor, setReciboValor] = useState('')
+  const [reciboDocumentoTipo, setReciboDocumentoTipo] = useState<'CPF' | 'RG'>('CPF')
+  const [reciboDocumentoNumero, setReciboDocumentoNumero] = useState('')
 
   const carregar = useCallback(async () => {
     const [cs, cms, props, sfs, lancs] = await Promise.all([
@@ -3517,12 +3520,12 @@ function Frete({
       return
     }
     const valor = parsePtBrNumber(reciboValor)
-    if (!reciboPagador.trim() || !reciboData || !reciboLocal.trim() || !reciboRecebedor.trim() || !Number.isFinite(valor)) {
-      onNotify('error', 'Preencha pagador, valor, data, local e recebedor do recibo.')
+    if (!reciboPagador.trim() || !reciboData || !reciboLocal.trim() || !reciboRecebedor.trim() || !reciboDocumentoNumero.trim() || !Number.isFinite(valor)) {
+      onNotify('error', 'Preencha pagador, valor, data, local, recebedor e documento do recibo.')
       return
     }
     const doc = new jsPDF()
-    const valorExtensoInfo = 'Valor por extenso: ________________________________________________'
+    const valorExtensoInfo = `Valor por extenso: ${valorReaisPorExtenso(valor)}`
     let y = 22
     doc.setFontSize(17)
     doc.text('RECIBO DE PAGAMENTO DE FRETE', 14, y)
@@ -3540,7 +3543,7 @@ function Frete({
     y += 26
     doc.text('Assinatura do recebedor: __________________________________________', 14, y)
     y += 14
-    doc.text('Documento: _______________________________________________________', 14, y)
+    doc.text(`Documento (${reciboDocumentoTipo}): ${reciboDocumentoNumero.trim()}`, 14, y)
     doc.save('recibo-pagamento-frete.pdf')
     onNotify('success', 'Recibo de pagamento gerado com sucesso.')
   }
@@ -3613,7 +3616,13 @@ function Frete({
         <input type="date" value={reciboData} onChange={(e) => setReciboData(e.target.value)} />
         <input placeholder="Local" value={reciboLocal} onChange={(e) => setReciboLocal(e.target.value)} />
         <input placeholder="Recebedor / caminhoneiro" value={reciboRecebedor} onChange={(e) => setReciboRecebedor(e.target.value)} />
+        <select value={reciboDocumentoTipo} onChange={(e) => setReciboDocumentoTipo(e.target.value as 'CPF' | 'RG')}>
+          <option value="CPF">CPF</option>
+          <option value="RG">RG</option>
+        </select>
+        <input placeholder="Numero do documento" value={reciboDocumentoNumero} onChange={(e) => setReciboDocumentoNumero(e.target.value)} />
       </div>
+      <p className="info">Valor por extenso: {valorReaisPorExtenso(parsePtBrNumber(reciboValor))}</p>
       <div className="actions">
         <button onClick={exportarReciboPdf}>Gerar recibo separado</button>
       </div>
