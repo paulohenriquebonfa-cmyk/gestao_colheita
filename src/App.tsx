@@ -7,7 +7,7 @@ import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcProdutividadeVariedadeNoTalhao, totalSacasDivididas } from './core/analises'
 import { calcularFechamentoFrete, calcularValorDiesel } from './core/frete'
 import { validarCarga } from './core/validation'
-import { formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
+import { formatCpf, formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import { valorReaisPorExtenso } from './core/valorExtenso'
 import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, UserRole, VendaGrao } from './core/types'
 
@@ -3641,11 +3641,22 @@ function Frete({
         <input type="date" value={reciboData} onChange={(e) => setReciboData(e.target.value)} />
         <input placeholder="Local" value={reciboLocal} onChange={(e) => setReciboLocal(e.target.value)} />
         <input placeholder="Recebedor / caminhoneiro" value={reciboRecebedor} onChange={(e) => setReciboRecebedor(e.target.value)} />
-        <select value={reciboDocumentoTipo} onChange={(e) => setReciboDocumentoTipo(e.target.value as 'CPF' | 'RG')}>
+        <select
+          value={reciboDocumentoTipo}
+          onChange={(e) => {
+            const tipo = e.target.value as 'CPF' | 'RG'
+            setReciboDocumentoTipo(tipo)
+            if (tipo === 'CPF') setReciboDocumentoNumero(formatCpf(reciboDocumentoNumero))
+          }}
+        >
           <option value="CPF">CPF</option>
           <option value="RG">RG</option>
         </select>
-        <input placeholder="Numero do documento" value={reciboDocumentoNumero} onChange={(e) => setReciboDocumentoNumero(e.target.value)} />
+        <input
+          placeholder={reciboDocumentoTipo === 'CPF' ? '000.000.000-00' : 'Numero do RG'}
+          value={reciboDocumentoNumero}
+          onChange={(e) => setReciboDocumentoNumero(reciboDocumentoTipo === 'CPF' ? formatCpf(e.target.value) : e.target.value)}
+        />
       </div>
       <p className="info">Valor por extenso: {valorReaisPorExtenso(parsePtBrNumber(reciboValor))}</p>
       <div className="actions">

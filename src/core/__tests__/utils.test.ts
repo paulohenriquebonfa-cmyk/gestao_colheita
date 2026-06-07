@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePtBrNumber } from '../utils'
+import { formatCpf, parsePtBrNumber } from '../utils'
 
 describe('parsePtBrNumber', () => {
   it('aceita numero brasileiro com milhar e decimal', () => {
@@ -13,5 +13,15 @@ describe('parsePtBrNumber', () => {
 
   it('mantem ponto como milhar quando ha tres digitos depois do ponto', () => {
     expect(parsePtBrNumber('21.000')).toBe(21000)
+  })
+})
+
+describe('formatCpf', () => {
+  it('formata CPF no padrao 000.000.000-00', () => {
+    expect(formatCpf('12345678901')).toBe('123.456.789-01')
+  })
+
+  it('remove caracteres nao numericos e limita em 11 digitos', () => {
+    expect(formatCpf('123.456.789-0123')).toBe('123.456.789-01')
   })
 })
