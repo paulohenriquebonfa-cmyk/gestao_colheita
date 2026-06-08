@@ -3705,7 +3705,7 @@ function Frete({
       doc.text('Nenhum registro encontrado.', 14, y)
     } else {
       for (const c of filtradas) {
-        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas frete | frete R$ ${formatPtBrNumber(c.frete_valor_total)}`
+        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas frete | R$ ${formatPtBrNumber(c.frete_valor_por_saca)}/saca | frete R$ ${formatPtBrNumber(c.frete_valor_total)}`
         const partes = doc.splitTextToSize(linhaFrete, 180)
         y = ensureSpace(doc, y, partes.length * 5 + 4)
         doc.text(partes, 14, y)
