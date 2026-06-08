@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calcularFechamentoFrete, calcularFreteCarga, calcularValorDiesel, resumirReprocessamentoFrete } from '../frete'
+import { calcularFechamentoFrete, calcularFreteCarga, calcularSacasFrete, calcularValorDiesel, resumirReprocessamentoFrete } from '../frete'
 import type { Carga, FreteLancamento } from '../types'
 
 function lancamento(patch: Partial<FreteLancamento>): FreteLancamento {
@@ -99,8 +99,8 @@ describe('frete', () => {
 
   it('resume o impacto do reprocessamento da rota', () => {
     const resumo = resumirReprocessamentoFrete([
-      carga({ sacas: 500, frete_valor_por_saca: 2, frete_valor_total: 1000 }),
-      carga({ sacas: 600, frete_valor_por_saca: 2, frete_valor_total: 1200 })
+      carga({ peso_bruto_kg: 30000, sacas: 500, frete_valor_por_saca: 2, frete_valor_total: 1000 }),
+      carga({ peso_bruto_kg: 36000, sacas: 600, frete_valor_por_saca: 2, frete_valor_total: 1200 })
     ], 2.3)
 
     expect(resumo.quantidadeCargas).toBe(2)
@@ -111,7 +111,8 @@ describe('frete', () => {
   })
 
   it('calcula frete de cada carga com valor por saca da rota', () => {
-    expect(calcularFreteCarga(550, 2.35)).toBe(1292.5)
+    expect(calcularSacasFrete(33000)).toBe(550)
+    expect(calcularFreteCarga(33000, 2.35)).toBe(1292.5)
     expect(calcularFreteCarga(0, 2.35)).toBe(0)
   })
 })

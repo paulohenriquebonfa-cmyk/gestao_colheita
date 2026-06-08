@@ -1,4 +1,5 @@
 import type { Carga, FreteLancamento } from './types'
+import { toSacas } from './metrics'
 
 export interface FechamentoFrete {
   totalViagens: number
@@ -20,9 +21,14 @@ export function calcularValorDiesel(litros: number, precoLitro: number): number 
   return roundMoney(litros * precoLitro)
 }
 
-export function calcularFreteCarga(sacas: number, valorPorSaca: number): number {
-  if (!Number.isFinite(sacas) || sacas <= 0 || !Number.isFinite(valorPorSaca) || valorPorSaca <= 0) return 0
-  return roundMoney(sacas * valorPorSaca)
+export function calcularSacasFrete(pesoBrutoKg: number): number {
+  if (!Number.isFinite(pesoBrutoKg) || pesoBrutoKg <= 0) return 0
+  return round4(toSacas(pesoBrutoKg))
+}
+
+export function calcularFreteCarga(pesoBrutoKg: number, valorPorSaca: number): number {
+  if (!Number.isFinite(pesoBrutoKg) || pesoBrutoKg <= 0 || !Number.isFinite(valorPorSaca) || valorPorSaca <= 0) return 0
+  return roundMoney(calcularSacasFrete(pesoBrutoKg) * valorPorSaca)
 }
 
 export function calcularFechamentoFrete(input: {
@@ -35,7 +41,7 @@ export function calcularFechamentoFrete(input: {
   const freteBruto = Number.isFinite(input.freteBruto) && (input.freteBruto ?? 0) > 0
     ? roundMoney(input.freteBruto ?? 0)
     : (Number.isFinite(input.valorPorSaca) && (input.valorPorSaca ?? 0) > 0
-        ? calcularFreteCarga(input.totalSacas, input.valorPorSaca ?? 0)
+        ? roundMoney(input.totalSacas * (input.valorPorSaca ?? 0))
         : 0)
   const valorPorSaca = Number.isFinite(input.valorPorSaca) && (input.valorPorSaca ?? 0) > 0
     ? round4(input.valorPorSaca ?? 0)
@@ -69,9 +75,9 @@ export interface ResumoReprocessamentoFrete {
 }
 
 export function resumirReprocessamentoFrete(cargas: Carga[], novoValorPorSaca: number): ResumoReprocessamentoFrete {
-  const totalSacas = round4(cargas.reduce((acc, carga) => acc + carga.sacas, 0))
+  const totalSacas = round4(cargas.reduce((acc, carga) => acc + calcularSacasFrete(carga.peso_bruto_kg), 0))
   const totalAnterior = roundMoney(cargas.reduce((acc, carga) => acc + carga.frete_valor_total, 0))
-  const totalNovo = roundMoney(cargas.reduce((acc, carga) => acc + calcularFreteCarga(carga.sacas, novoValorPorSaca), 0))
+  const totalNovo = roundMoney(cargas.reduce((acc, carga) => acc + calcularFreteCarga(carga.peso_bruto_kg, novoValorPorSaca), 0))
   return {
     quantidadeCargas: cargas.length,
     totalSacas,

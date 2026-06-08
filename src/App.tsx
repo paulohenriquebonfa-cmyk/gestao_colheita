@@ -5,7 +5,7 @@ import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcProdutividadeVariedadeNoTalhao, totalSacasDivididas } from './core/analises'
-import { calcularFechamentoFrete, calcularFreteCarga, calcularValorDiesel, resumirReprocessamentoFrete } from './core/frete'
+import { calcularFechamentoFrete, calcularFreteCarga, calcularSacasFrete, calcularValorDiesel, resumirReprocessamentoFrete } from './core/frete'
 import { validarCarga } from './core/validation'
 import { formatCpf, formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import { valorReaisPorExtenso } from './core/valorExtenso'
@@ -1919,14 +1919,15 @@ function NovaCarga({
     const liquido = parsePtBrNumber(pesoLiquido || '0')
     return Number.isFinite(liquido) ? toSacas(liquido) : 0
   }, [pesoLiquido])
+  const sacasFrete = useMemo(() => calcularSacasFrete(parsePtBrNumber(pesoBruto || '0')), [pesoBruto])
 
   const tarifaSelecionada = useMemo(
     () => tarifasFrete.find((tarifa) => tarifa.propriedade_id === propriedadeId && tarifa.armazem_id === armazemId),
     [armazemId, propriedadeId, tarifasFrete]
   )
   const valorFreteAtual = useMemo(
-    () => calcularFreteCarga(sacas, tarifaSelecionada?.valor_por_saca ?? 0),
-    [sacas, tarifaSelecionada]
+    () => calcularFreteCarga(parsePtBrNumber(pesoBruto || '0'), tarifaSelecionada?.valor_por_saca ?? 0),
+    [pesoBruto, tarifaSelecionada]
   )
 
   const liquidosDivididosValidos = useMemo(
@@ -2009,7 +2010,7 @@ function NovaCarga({
           peso_liquido_kg: linha.liquidoNum,
           sacas: toSacas(linha.liquidoNum),
           frete_valor_por_saca: tarifaSelecionada?.valor_por_saca ?? 0,
-          frete_valor_total: calcularFreteCarga(toSacas(linha.liquidoNum), tarifaSelecionada?.valor_por_saca ?? 0),
+          frete_valor_total: calcularFreteCarga(brutoLinha, tarifaSelecionada?.valor_por_saca ?? 0),
           sync_status: 'pending_sync',
           created_at: now,
           updated_at: now,
@@ -2093,7 +2094,7 @@ function NovaCarga({
       peso_liquido_kg: liquidoAtual,
       sacas,
       frete_valor_por_saca: tarifaSelecionada?.valor_por_saca ?? 0,
-      frete_valor_total: calcularFreteCarga(sacas, tarifaSelecionada?.valor_por_saca ?? 0),
+      frete_valor_total: calcularFreteCarga(brutoAtual, tarifaSelecionada?.valor_por_saca ?? 0),
       sync_status: 'pending_sync',
       created_at: now,
       updated_at: now,
@@ -2145,7 +2146,7 @@ function NovaCarga({
       {!modoDividido && <p className="info">Sacas (automatico): <strong>{sacas.toFixed(2)}</strong></p>}
       <p className="info">
         Tarifa da rota: <strong>{tarifaSelecionada ? `R$ ${formatPtBrNumber(tarifaSelecionada.valor_por_saca)}/saca` : 'nao cadastrada'}</strong>
-        {!modoDividido && ` | Frete estimado desta carga: R$ ${formatPtBrNumber(valorFreteAtual)}`}
+        {!modoDividido && ` | Sacas de frete (peso bruto): ${formatPtBrNumber(sacasFrete)} | Frete estimado desta carga: R$ ${formatPtBrNumber(valorFreteAtual)}`}
       </p>
       {!tarifaSelecionada && <p className="muted">Sem tarifa para esta rota. A carga sera salva com frete R$ 0,00 e podera ser reprocessada depois.</p>}
       {modoDividido && (
@@ -3199,6 +3200,7 @@ function Frete({
   const [dataFim, setDataFim] = useState('')
   const [tarifaPropriedadeId, setTarifaPropriedadeId] = useState('')
   const [tarifaArmazemId, setTarifaArmazemId] = useState('')
+  const [tarifaArmazemIds, setTarifaArmazemIds] = useState<string[]>([])
   const [tarifaValorPorSaca, setTarifaValorPorSaca] = useState('')
   const [tarifaObservacao, setTarifaObservacao] = useState('')
   const [safraNome, setSafraNome] = useState('')
@@ -3264,12 +3266,48 @@ function Frete({
 
   function selecionarPropriedadeTarifa(id: string) {
     setTarifaPropriedadeId(id)
+    if (!id) {
+      setTarifaArmazemId('')
+      setTarifaArmazemIds([])
+      setTarifaValorPorSaca('')
+      setTarifaObservacao('')
+      return
+    }
     preencherTarifaDaRota(id, tarifaArmazemId)
   }
 
   function selecionarArmazemTarifa(id: string) {
     setTarifaArmazemId(id)
+    if (id) {
+      setTarifaArmazemIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    }
     preencherTarifaDaRota(tarifaPropriedadeId, id)
+  }
+
+  function alternarArmazemTarifa(id: string) {
+    setTarifaArmazemIds((prev) => {
+      const jaSelecionado = prev.includes(id)
+      if (jaSelecionado) {
+        const next = prev.filter((item) => item !== id)
+        if (tarifaArmazemId === id) {
+          const proximoFoco = next[0] ?? ''
+          setTarifaArmazemId(proximoFoco)
+          if (proximoFoco) {
+            preencherTarifaDaRota(tarifaPropriedadeId, proximoFoco)
+          } else {
+            setTarifaValorPorSaca('')
+            setTarifaObservacao('')
+          }
+        }
+        return next
+      }
+
+      if (!tarifaArmazemId) {
+        setTarifaArmazemId(id)
+        preencherTarifaDaRota(tarifaPropriedadeId, id)
+      }
+      return [...prev, id]
+    })
   }
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
@@ -3284,7 +3322,7 @@ function Frete({
 
   const totalViagens = filtradas.length
   const totalKgBruto = filtradas.reduce((acc, c) => acc + c.peso_bruto_kg, 0)
-  const totalSacas = filtradas.reduce((acc, c) => acc + c.sacas, 0)
+  const totalSacas = filtradas.reduce((acc, c) => acc + calcularSacasFrete(c.peso_bruto_kg), 0)
   const totalFreteBruto = filtradas.reduce((acc, c) => acc + c.frete_valor_total, 0)
   const tarifaValorNum = parsePtBrNumber(tarifaValorPorSaca)
   const lancamentosFiltrados = lancamentos
@@ -3351,8 +3389,8 @@ function Frete({
   }
 
   async function salvarTarifaRota() {
-    if (!tarifaPropriedadeId || !tarifaArmazemId) {
-      onNotify('error', 'Selecione propriedade e armazem para salvar a tarifa da rota.')
+    if (!tarifaPropriedadeId || tarifaArmazemIds.length === 0) {
+      onNotify('error', 'Selecione a propriedade e pelo menos um armazem para salvar a tarifa.')
       return
     }
     const valorPorSaca = parsePtBrNumber(tarifaValorPorSaca)
@@ -3361,36 +3399,43 @@ function Frete({
       return
     }
     const now = nowIso()
-    const row: TarifaFreteRota = tarifaSelecionada
-      ? {
-          ...tarifaSelecionada,
-          valor_por_saca: Number(valorPorSaca.toFixed(4)),
-          observacao: tarifaObservacao.trim() || undefined,
-          updated_at: now,
-          updated_by: userId,
-          sync_status: 'pending_sync'
-        }
-      : {
-          id: makeId(),
-          propriedade_id: tarifaPropriedadeId,
-          armazem_id: tarifaArmazemId,
-          valor_por_saca: Number(valorPorSaca.toFixed(4)),
-          observacao: tarifaObservacao.trim() || undefined,
-          created_at: now,
-          updated_at: now,
-          created_by: userId,
-          updated_by: userId,
-          sync_status: 'pending_sync'
-        }
-    await db.tarifas_frete_rota.put(row)
-    await queueOp('tarifas_frete_rota', row.id, row)
+    let atualizadas = 0
+    let criadas = 0
+    for (const armazemId of tarifaArmazemIds) {
+      const existente = tarifasFrete.find((item) => item.propriedade_id === tarifaPropriedadeId && item.armazem_id === armazemId)
+      const row: TarifaFreteRota = existente
+        ? {
+            ...existente,
+            valor_por_saca: Number(valorPorSaca.toFixed(4)),
+            observacao: tarifaObservacao.trim() || undefined,
+            updated_at: now,
+            updated_by: userId,
+            sync_status: 'pending_sync'
+          }
+        : {
+            id: makeId(),
+            propriedade_id: tarifaPropriedadeId,
+            armazem_id: armazemId,
+            valor_por_saca: Number(valorPorSaca.toFixed(4)),
+            observacao: tarifaObservacao.trim() || undefined,
+            created_at: now,
+            updated_at: now,
+            created_by: userId,
+            updated_by: userId,
+            sync_status: 'pending_sync'
+          }
+      await db.tarifas_frete_rota.put(row)
+      await queueOp('tarifas_frete_rota', row.id, row)
+      if (existente) atualizadas += 1
+      else criadas += 1
+    }
     try {
       await runSync()
     } catch {
       onNotify('success', 'Tarifa salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
     }
     await carregar()
-    onNotify('success', tarifaSelecionada ? 'Tarifa da rota atualizada.' : 'Tarifa da rota cadastrada.')
+    onNotify('success', `Tarifa aplicada em ${tarifaArmazemIds.length} armazem(ns). Novas: ${criadas} | atualizadas: ${atualizadas}.`)
   }
 
   async function reprocessarCargasDaRota() {
@@ -3417,7 +3462,7 @@ function Frete({
       const updated: Carga = {
         ...carga,
         frete_valor_por_saca: Number(tarifaValorNum.toFixed(4)),
-        frete_valor_total: calcularFreteCarga(carga.sacas, tarifaValorNum),
+        frete_valor_total: calcularFreteCarga(carga.peso_bruto_kg, tarifaValorNum),
         updated_at: now,
         updated_by: userId,
         sync_status: 'pending_sync'
@@ -3547,7 +3592,7 @@ function Frete({
   }
 
   function exportarCsv() {
-    const cab = ['tipo', 'data', 'descricao', 'placa', 'peso_bruto_kg', 'sacas', 'litros', 'preco_litro_rs', 'valor_rs']
+    const cab = ['tipo', 'data', 'descricao', 'placa', 'peso_bruto_kg', 'sacas_frete_bruto', 'litros', 'preco_litro_rs', 'valor_rs']
     const resumo = [
       ['resumo', 'safra', safraSelecionada?.nome ?? '-', '', '', '', '', '', ''],
       ['resumo', 'cultura', safraSelecionada?.cultura ?? '-', '', '', '', '', '', ''],
@@ -3556,7 +3601,7 @@ function Frete({
       ['resumo', 'periodo_fim', dataFim || '-', '', '', '', '', '', ''],
       ['resumo', 'total_viagens', String(totalViagens), '', '', '', '', '', ''],
       ['resumo', 'total_bruto_kg', '', '', totalKgBruto.toFixed(2), '', '', '', ''],
-      ['resumo', 'total_sacas', '', '', '', fechamento.totalSacas.toFixed(2), '', '', ''],
+      ['resumo', 'total_sacas_frete_bruto', '', '', '', fechamento.totalSacas.toFixed(2), '', '', ''],
       ['resumo', 'valor_medio_por_saca_rs', '', '', '', '', '', '', fechamento.valorPorSaca.toFixed(4)],
       ['resumo', 'frete_bruto_rs', '', '', '', '', '', '', fechamento.freteBruto.toFixed(2)],
       ['resumo', 'total_diesel_rs', '', '', '', '', '', '', fechamento.totalDiesel.toFixed(2)],
@@ -3569,7 +3614,7 @@ function Frete({
       'Carga transportada',
       placaPorId.get(c.placa) ?? c.placa,
       c.peso_bruto_kg.toFixed(2),
-      c.sacas.toFixed(2),
+      calcularSacasFrete(c.peso_bruto_kg).toFixed(2),
       '',
       '',
       c.frete_valor_total.toFixed(2)
@@ -3638,7 +3683,7 @@ function Frete({
     y += 6
     doc.text(`Peso bruto total transportado: ${formatPtBrNumber(totalKgBruto)} kg`, 14, y)
     y += 6
-    doc.text(`Total em sacas: ${formatPtBrNumber(totalSacas)} sacas`, 14, y)
+    doc.text(`Total em sacas de frete (peso bruto): ${formatPtBrNumber(totalSacas)} sacas`, 14, y)
     y += 6
     doc.text(`Valor medio por saca nas cargas: R$ ${formatPtBrNumber(fechamento.valorPorSaca)}`, 14, y)
     y += 6
@@ -3660,7 +3705,7 @@ function Frete({
       doc.text('Nenhum registro encontrado.', 14, y)
     } else {
       for (const c of filtradas) {
-        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(c.sacas)} sacas | frete R$ ${formatPtBrNumber(c.frete_valor_total)}`
+        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas frete | frete R$ ${formatPtBrNumber(c.frete_valor_total)}`
         const partes = doc.splitTextToSize(linhaFrete, 180)
         y = ensureSpace(doc, y, partes.length * 5 + 4)
         doc.text(partes, 14, y)
@@ -3765,9 +3810,22 @@ function Frete({
       <h3>Tarifa por rota</h3>
       <div className="grid">
         <SelectFromList label="Propriedade da rota" value={tarifaPropriedadeId} onChange={selecionarPropriedadeTarifa} items={propriedades} />
-        <SelectFromList label="Armazem destino" value={tarifaArmazemId} onChange={selecionarArmazemTarifa} items={armazens} />
+        <SelectFromList label="Armazem em foco" value={tarifaArmazemId} onChange={selecionarArmazemTarifa} items={armazens} />
         <input placeholder="Valor por saca da rota (R$)" value={tarifaValorPorSaca} onChange={(e) => setTarifaValorPorSaca(e.target.value)} />
         <input placeholder="Observacao da rota" value={tarifaObservacao} onChange={(e) => setTarifaObservacao(e.target.value)} />
+      </div>
+      <p className="muted">Marque abaixo os armazens que devem receber o mesmo valor de frete.</p>
+      <div className="grid">
+        {armazens.map((armazem) => (
+          <label key={armazem.id}>
+            <input
+              type="checkbox"
+              checked={tarifaArmazemIds.includes(armazem.id)}
+              onChange={() => alternarArmazemTarifa(armazem.id)}
+            />{' '}
+            {armazem.nome}
+          </label>
+        ))}
       </div>
       <div className="actions">
         <button onClick={() => void salvarTarifaRota()}>{tarifaSelecionada ? 'Atualizar tarifa da rota' : 'Salvar tarifa da rota'}</button>
@@ -3798,7 +3856,7 @@ function Frete({
       <div className="kpis">
         <article><span>Total de viagens</span><strong>{totalViagens}</strong></article>
         <article><span>Total bruto (kg)</span><strong>{formatPtBrNumber(totalKgBruto)}</strong></article>
-        <article><span>Total em sacas</span><strong>{formatPtBrNumber(totalSacas)}</strong></article>
+        <article><span>Total em sacas de frete</span><strong>{formatPtBrNumber(totalSacas)}</strong></article>
         <article><span>Frete bruto (R$)</span><strong>{formatPtBrNumber(fechamento.freteBruto)}</strong></article>
         <article><span>Diesel (R$)</span><strong>{formatPtBrNumber(fechamento.totalDiesel)}</strong></article>
         <article><span>Vales (R$)</span><strong>{formatPtBrNumber(fechamento.totalVales)}</strong></article>
@@ -3884,7 +3942,7 @@ function Frete({
         {filtradas.map((c) => (
           <li key={c.id}>
             {c.data} | {placaPorId.get(c.placa) ?? c.placa} | {formatPtBrNumber(c.peso_bruto_kg)} kg bruto | {formatPtBrNumber(c.sacas)} sacas
-            {` | frete R$ ${formatPtBrNumber(c.frete_valor_total)} | rota ${nomePropriedade.get(c.propriedade_id) ?? '-'} -> ${nomeArmazem.get(c.armazem_id) ?? '-'}`}
+            {` | frete R$ ${formatPtBrNumber(c.frete_valor_total)} | ${formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas frete | rota ${nomePropriedade.get(c.propriedade_id) ?? '-'} -> ${nomeArmazem.get(c.armazem_id) ?? '-'}`}
           </li>
         ))}
       </ul>
@@ -4001,7 +4059,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       peso_liquido_kg: liquidoAtualizado,
       sacas: sacasAtualizadas,
       frete_valor_por_saca: freteValorPorSaca,
-      frete_valor_total: calcularFreteCarga(sacasAtualizadas, freteValorPorSaca),
+      frete_valor_total: calcularFreteCarga(parsePtBrNumber(editBruto), freteValorPorSaca),
       updated_at: nowIso(),
       updated_by: userId,
       sync_status: 'pending_sync'
@@ -4116,7 +4174,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Frete: R$ {formatPtBrNumber(c.frete_valor_total)} ({formatPtBrNumber(c.frete_valor_por_saca)}/saca) | Status: {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
+            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Frete: R$ {formatPtBrNumber(c.frete_valor_total)} ({formatPtBrNumber(c.frete_valor_por_saca)}/saca sobre {formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas brutas) | Status: {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>
@@ -4266,7 +4324,7 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
       peso_liquido_kg: liquido,
       sacas: toSacas(liquido),
       frete_valor_por_saca: tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0,
-      frete_valor_total: calcularFreteCarga(toSacas(liquido), tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0),
+      frete_valor_total: calcularFreteCarga(bruto, tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0),
       sync_status: 'pending_sync',
       created_at: now,
       updated_at: now,
