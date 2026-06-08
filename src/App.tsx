@@ -9,7 +9,7 @@ import { calcularFechamentoFrete, calcularFreteCarga, calcularSacasFrete, calcul
 import { validarCarga } from './core/validation'
 import { formatCpf, formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import { valorReaisPorExtenso } from './core/valorExtenso'
-import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, TarifaFreteRota, UserRole, VendaGrao } from './core/types'
+import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PendingOp, PilotParticipant, Safra, Talhao, TarifaFreteRota, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
 
@@ -815,7 +815,8 @@ function AssistenteConfiguracao({
         safras,
         fretes,
         tarifas,
-        areas
+        areas,
+        pendingOps
       ] = await Promise.all([
         db.propriedades.toArray(),
         db.produtores.toArray(),
@@ -830,7 +831,8 @@ function AssistenteConfiguracao({
         db.safras.toArray(),
         db.frete_lancamentos.toArray(),
         db.tarifas_frete_rota.toArray(),
-        db.area_variedade_talhao.toArray()
+        db.area_variedade_talhao.toArray(),
+        db.pending_ops.toArray()
       ])
 
       const testSafras = safras.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
@@ -863,6 +865,46 @@ function AssistenteConfiguracao({
       const testVendas = vendas.filter((row) => testSafraIds.has(row.safra_id) || testProdutorIds.has(row.produtor_id) || testArmazemIds.has(row.armazem_cliente_id))
       const testFretes = fretes.filter((row) => testSafraIds.has(row.safra_id) || testCaminhaoIds.has(row.caminhao_id))
       const testTarifas = tarifas.filter((row) => testSafraIds.has(row.safra_id) || testPropriedadeIds.has(row.propriedade_id) || testArmazemIds.has(row.armazem_id))
+      const testCargaIdsSet = new Set(testCargaIds)
+
+      const isTestPendingOp = (op: PendingOp) => {
+        if (testCargaIdsSet.has(op.record_id)
+          || testSafraIds.has(op.record_id)
+          || testPropriedadeIds.has(op.record_id)
+          || testProdutorIds.has(op.record_id)
+          || testVariedadeIds.has(op.record_id)
+          || testArmazemIds.has(op.record_id)
+          || testCaminhaoIds.has(op.record_id)
+          || testTalhaoIds.has(op.record_id)
+        ) {
+          return true
+        }
+        if (!op.payload || typeof op.payload !== 'object') return false
+        const payload = op.payload as Record<string, unknown>
+        const nome = typeof payload.nome === 'string' ? payload.nome : ''
+        if (startsWithTeste(nome) || TEST_CAMINHAO_NOMES.includes(nome)) return true
+        return testSafraIds.has(String(payload.safra_id ?? ''))
+          || testPropriedadeIds.has(String(payload.propriedade_id ?? ''))
+          || testProdutorIds.has(String(payload.produtor_id ?? ''))
+          || testVariedadeIds.has(String(payload.variedade_id ?? ''))
+          || testArmazemIds.has(String(payload.armazem_id ?? payload.armazem_cliente_id ?? ''))
+          || testCaminhaoIds.has(String(payload.caminhao_id ?? payload.placa ?? ''))
+          || testTalhaoIds.has(String(payload.talhao_id ?? ''))
+          || testCargaIdsSet.has(String(payload.referencia_id ?? ''))
+        }
+
+      const pendingTestOps = pendingOps.filter(isTestPendingOp)
+      for (const op of pendingTestOps) {
+        const id = op.record_id
+        if (op.table === 'cargas') testCargaIdsSet.add(id)
+        if (op.table === 'safras') testSafraIds.add(id)
+        if (op.table === 'propriedades') testPropriedadeIds.add(id)
+        if (op.table === 'produtores') testProdutorIds.add(id)
+        if (op.table === 'variedades') testVariedadeIds.add(id)
+        if (op.table === 'armazens') testArmazemIds.add(id)
+        if (op.table === 'caminhoes') testCaminhaoIds.add(id)
+        if (op.table === 'talhoes') testTalhaoIds.add(id)
+      }
 
       const hasAnyTestData = [
         testSafras.length,
@@ -872,13 +914,14 @@ function AssistenteConfiguracao({
         testArmazens.length,
         testCaminhoes.length,
         testTalhoes.length,
-        testCargaIds.size,
+        testCargaIdsSet.size,
         testEstoques.length,
         testMovimentos.length,
         testVendas.length,
         testFretes.length,
         testTarifas.length,
-        testAreas.length
+        testAreas.length,
+        pendingTestOps.length
       ].some((count) => count > 0)
 
       if (!hasAnyTestData) {
@@ -904,7 +947,7 @@ function AssistenteConfiguracao({
       await excluirLote('frete_lancamentos', db.frete_lancamentos, testFretes)
       await excluirLote('tarifas_frete_rota', db.tarifas_frete_rota, testTarifas)
       await excluirLote('estoque_armazem', db.estoque_armazem, testEstoques)
-      await excluirLote('cargas', db.cargas, cargas.filter((row) => testCargaIds.has(row.id)))
+      await excluirLote('cargas', db.cargas, cargas.filter((row) => testCargaIdsSet.has(row.id)))
       await excluirLote('safras', db.safras, testSafras)
       await excluirLote('talhoes', db.talhoes, testTalhoes)
       await excluirLote('caminhoes', db.caminhoes, testCaminhoes)
@@ -912,12 +955,74 @@ function AssistenteConfiguracao({
       await excluirLote('produtores', db.produtores, testProdutores)
       await excluirLote('propriedades', db.propriedades, testPropriedades)
       await excluirLote('armazens', db.armazens, testArmazens)
+      for (const op of pendingTestOps) {
+        await db.pending_ops.delete(op.id)
+      }
+
+      const queueDeleteIds = async (
+        tableName: 'area_variedade_talhao' | 'movimento_estoque' | 'venda_grao' | 'frete_lancamentos' | 'tarifas_frete_rota' | 'estoque_armazem' | 'cargas' | 'safras' | 'talhoes' | 'caminhoes' | 'variedades' | 'produtores' | 'propriedades' | 'armazens',
+        ids: string[]
+      ) => {
+        const unicos = [...new Set(ids.filter(Boolean))]
+        for (const id of unicos) {
+          await queueDeleteOp(tableName, id)
+        }
+      }
+
+      const cloudDeletePlan = {
+        area_variedade_talhao: testAreas.map((row) => row.id),
+        movimento_estoque: testMovimentos.map((row) => row.id),
+        venda_grao: testVendas.map((row) => row.id),
+        frete_lancamentos: testFretes.map((row) => row.id),
+        tarifas_frete_rota: testTarifas.map((row) => row.id),
+        estoque_armazem: testEstoques.map((row) => row.id),
+        cargas: [...testCargaIdsSet],
+        safras: [...testSafraIds],
+        talhoes: [...testTalhaoIds],
+        caminhoes: [...testCaminhaoIds],
+        variedades: [...testVariedadeIds],
+        produtores: [...testProdutorIds],
+        propriedades: [...testPropriedadeIds],
+        armazens: [...testArmazemIds]
+      } satisfies Record<'area_variedade_talhao' | 'movimento_estoque' | 'venda_grao' | 'frete_lancamentos' | 'tarifas_frete_rota' | 'estoque_armazem' | 'cargas' | 'safras' | 'talhoes' | 'caminhoes' | 'variedades' | 'produtores' | 'propriedades' | 'armazens', string[]>
+
+      const cloudOrder: Array<keyof typeof cloudDeletePlan> = [
+        'area_variedade_talhao',
+        'movimento_estoque',
+        'venda_grao',
+        'frete_lancamentos',
+        'tarifas_frete_rota',
+        'estoque_armazem',
+        'cargas',
+        'safras',
+        'talhoes',
+        'caminhoes',
+        'variedades',
+        'produtores',
+        'propriedades',
+        'armazens'
+      ]
 
       let syncOk = true
       try {
-        await runSync()
+        if (supabase) {
+          for (const tableName of cloudOrder) {
+            const ids = [...new Set(cloudDeletePlan[tableName].filter(Boolean))]
+            if (ids.length === 0) continue
+            const { error } = await supabase.from(tableName).delete().in('id', ids)
+            if (error) throw new Error(`${tableName}: ${error.message}`)
+          }
+        } else {
+          for (const tableName of cloudOrder) {
+            await queueDeleteIds(tableName, cloudDeletePlan[tableName])
+          }
+          await runSync()
+        }
       } catch {
         syncOk = false
+        for (const tableName of cloudOrder) {
+          await queueDeleteIds(tableName, cloudDeletePlan[tableName])
+        }
         onNotify('success', 'Dados de teste removidos deste aparelho. Clique em Sincronizar depois para concluir a limpeza na nuvem.')
       }
 
