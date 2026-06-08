@@ -54,6 +54,9 @@ function storageKeySafraAtiva(userId: string) {
   return `active_safra_${userId}`
 }
 
+const TEST_DATA_PREFIX = 'TESTE -'
+const TEST_CAMINHAO_NOMES = ['BXC9D09', 'HTR4A21', 'TESTE - BXC9D09', 'TESTE - HTR4A21']
+
 function pathLinha(values: number[], width: number, height: number) {
   if (values.length === 0) return ''
   const max = Math.max(...values, 1)
@@ -771,7 +774,7 @@ function AssistenteConfiguracao({
   }
 
   async function carregarDadosTeste() {
-    const confirmou = window.confirm('Carregar dados de teste para dashboard, analises, frete e armazenagem?')
+    const confirmou = window.confirm('Carregar dados de teste para dashboard, analises, frete, armazenagem e troca de safras?')
     if (!confirmou) return
     try {
       const result = await bootstrapDadosTeste(user.id)
@@ -789,6 +792,124 @@ function AssistenteConfiguracao({
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'erro desconhecido'
       onNotify('error', `Falha ao carregar dados de teste: ${msg}`)
+    }
+  }
+
+  async function excluirDadosTeste() {
+    const confirmou = window.confirm('Excluir somente os dados de teste gerados pelo sistema?')
+    if (!confirmou) return
+
+    try {
+      const startsWithTeste = (nome?: string) => (nome ?? '').startsWith(TEST_DATA_PREFIX)
+      const [
+        propriedades,
+        produtores,
+        variedades,
+        armazens,
+        caminhoes,
+        talhoes,
+        cargas,
+        estoques,
+        movimentos,
+        vendas,
+        safras,
+        fretes,
+        tarifas,
+        areas
+      ] = await Promise.all([
+        db.propriedades.toArray(),
+        db.produtores.toArray(),
+        db.variedades.toArray(),
+        db.armazens.toArray(),
+        db.caminhoes.toArray(),
+        db.talhoes.toArray(),
+        db.cargas.toArray(),
+        db.estoque_armazem.toArray(),
+        db.movimento_estoque.toArray(),
+        db.venda_grao.toArray(),
+        db.safras.toArray(),
+        db.frete_lancamentos.toArray(),
+        db.tarifas_frete_rota.toArray(),
+        db.area_variedade_talhao.toArray()
+      ])
+
+      const testSafras = safras.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+      const testSafraIds = new Set(testSafras.map((row) => row.id))
+      const testPropriedades = propriedades.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+      const testProdutores = produtores.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+      const testVariedades = variedades.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+      const testArmazens = armazens.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+      const testCaminhoes = caminhoes.filter((row) => row.created_by === user.id && TEST_CAMINHAO_NOMES.includes(row.nome))
+      const testTalhoes = talhoes.filter((row) => row.created_by === user.id && startsWithTeste(row.nome))
+
+      const testCargaIds = new Set(cargas.filter((row) => testSafraIds.has(row.safra_id)).map((row) => row.id))
+      const testAreas = areas.filter((row) => testTalhoes.some((talhao) => talhao.id === row.talhao_id) || testVariedades.some((variedade) => variedade.id === row.variedade_id))
+      const testEstoques = estoques.filter((row) => testSafraIds.has(row.safra_id))
+      const testMovimentos = movimentos.filter((row) => testSafraIds.has(row.safra_id))
+      const testVendas = vendas.filter((row) => testSafraIds.has(row.safra_id))
+      const testFretes = fretes.filter((row) => testSafraIds.has(row.safra_id))
+      const testTarifas = tarifas.filter((row) => testSafraIds.has(row.safra_id))
+
+      const hasAnyTestData = [
+        testSafras.length,
+        testPropriedades.length,
+        testProdutores.length,
+        testVariedades.length,
+        testArmazens.length,
+        testCaminhoes.length,
+        testTalhoes.length,
+        testCargaIds.size,
+        testEstoques.length,
+        testMovimentos.length,
+        testVendas.length,
+        testFretes.length,
+        testTarifas.length,
+        testAreas.length
+      ].some((count) => count > 0)
+
+      if (!hasAnyTestData) {
+        onNotify('error', 'Nenhum dado de teste foi encontrado para excluir.')
+        return
+      }
+
+      const excluirLote = async <T extends { id: string }>(
+        tableName: 'area_variedade_talhao' | 'movimento_estoque' | 'venda_grao' | 'frete_lancamentos' | 'tarifas_frete_rota' | 'estoque_armazem' | 'cargas' | 'safras' | 'talhoes' | 'caminhoes' | 'variedades' | 'produtores' | 'propriedades' | 'armazens',
+        table: { delete: (id: string) => Promise<void> },
+        rows: T[]
+      ) => {
+        for (const row of rows) {
+          await table.delete(row.id)
+          await db.pending_ops.where('record_id').equals(row.id).delete()
+          await queueDeleteOp(tableName, row.id)
+        }
+      }
+
+      await excluirLote('area_variedade_talhao', db.area_variedade_talhao, testAreas)
+      await excluirLote('movimento_estoque', db.movimento_estoque, testMovimentos)
+      await excluirLote('venda_grao', db.venda_grao, testVendas)
+      await excluirLote('frete_lancamentos', db.frete_lancamentos, testFretes)
+      await excluirLote('tarifas_frete_rota', db.tarifas_frete_rota, testTarifas)
+      await excluirLote('estoque_armazem', db.estoque_armazem, testEstoques)
+      await excluirLote('cargas', db.cargas, cargas.filter((row) => testCargaIds.has(row.id)))
+      await excluirLote('safras', db.safras, testSafras)
+      await excluirLote('talhoes', db.talhoes, testTalhoes)
+      await excluirLote('caminhoes', db.caminhoes, testCaminhoes)
+      await excluirLote('variedades', db.variedades, testVariedades)
+      await excluirLote('produtores', db.produtores, testProdutores)
+      await excluirLote('propriedades', db.propriedades, testPropriedades)
+      await excluirLote('armazens', db.armazens, testArmazens)
+
+      try {
+        await runSync()
+      } catch {
+        onNotify('success', 'Dados de teste removidos deste aparelho. Clique em Sincronizar depois se a nuvem falhar.')
+      }
+
+      onRefresh()
+      onNotify('success', 'Dados de teste excluidos com sucesso.')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'erro desconhecido'
+      onNotify('error', `Falha ao excluir dados de teste: ${msg}`)
     }
   }
 
@@ -1262,6 +1383,7 @@ function AssistenteConfiguracao({
         <button onClick={() => void salvarSnapshotSemanal()}>Salvar snapshot semanal</button>
         <button onClick={() => void restaurarSnapshotSemanal()}>Restore assistido</button>
         <button onClick={() => void carregarDadosTeste()}>Carregar dados de teste</button>
+        <button onClick={() => void excluirDadosTeste()}>Excluir dados de teste</button>
         <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
@@ -4662,10 +4784,9 @@ async function bootstrapDemoData() {
 }
 
 async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; message: string }> {
-  const nomeSafraTeste = 'TESTE - Safra Soja 2026'
-  const existente = await db.safras.where('nome').equals(nomeSafraTeste).first()
-  if (existente?.created_by === userId) {
-    return { created: false, message: 'Dados de teste ja existem. Use Excluir todos os dados se quiser recomecar.' }
+  const safrasTesteExistentes = (await db.safras.toArray()).filter((row) => row.created_by === userId && row.nome.startsWith(TEST_DATA_PREFIX))
+  if (safrasTesteExistentes.length > 0) {
+    return { created: false, message: 'Dados de teste ja existem. Use Excluir dados de teste se quiser recriar o ambiente.' }
   }
 
   const getOrCreateBase = async (
@@ -4706,8 +4827,8 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     getOrCreateBase('variedades', 'TESTE - Milho Safrinha'),
     getOrCreateBase('armazens', 'TESTE - Silo Sede'),
     getOrCreateBase('armazens', 'TESTE - Cooperativa'),
-    getOrCreateBase('caminhoes', 'BXC9D09'),
-    getOrCreateBase('caminhoes', 'HTR4A21')
+    getOrCreateBase('caminhoes', 'TESTE - BXC9D09'),
+    getOrCreateBase('caminhoes', 'TESTE - HTR4A21')
   ])
   const [talhaoNorte, talhaoSul, talhaoOeste] = await Promise.all([
     getOrCreateTalhao('TESTE - Talhao Norte', 42),
@@ -4716,12 +4837,12 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   ])
 
   const now = nowIso()
-  const safra: Safra = {
+  const safraAnterior: Safra = {
     id: makeId(),
-    nome: nomeSafraTeste,
+    nome: 'TESTE - Safra Soja 2026',
     cultura: 'soja',
     ano: '2026',
-    ativa: true,
+    ativa: false,
     data_inicio: '2026-05-20',
     data_fim: '2026-06-20',
     created_at: now,
@@ -4730,17 +4851,33 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     updated_by: userId,
     sync_status: 'pending_sync'
   }
-  await db.safras.put(safra)
-  await queueOp('safras', safra.id, safra)
+  const safraAtual: Safra = {
+    id: makeId(),
+    nome: 'TESTE - Safra Milho 2027',
+    cultura: 'milho',
+    ano: '2027',
+    ativa: true,
+    data_inicio: '2027-01-10',
+    data_fim: '2027-02-20',
+    created_at: now,
+    updated_at: now,
+    created_by: userId,
+    updated_by: userId,
+    sync_status: 'pending_sync'
+  }
+  await db.safras.bulkPut([safraAnterior, safraAtual])
+  await queueOp('safras', safraAnterior.id, safraAnterior)
+  await queueOp('safras', safraAtual.id, safraAtual)
+  await definirSafraAtiva(userId, safraAtual.id)
 
   const tarifas: TarifaFreteRota[] = [
     {
       id: makeId(),
-      safra_id: safra.id,
+      safra_id: safraAnterior.id,
       propriedade_id: propriedade.id,
       armazem_id: armazemSede.id,
       valor_por_saca: 2,
-      observacao: 'Rota curta para silo da sede',
+      observacao: 'Rota curta para silo da sede na soja',
       created_at: now,
       updated_at: now,
       created_by: userId,
@@ -4749,11 +4886,37 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     },
     {
       id: makeId(),
-      safra_id: safra.id,
+      safra_id: safraAnterior.id,
       propriedade_id: propriedade.id,
       armazem_id: armazemCoop.id,
       valor_por_saca: 2.35,
-      observacao: 'Rota mais longa ate cooperativa',
+      observacao: 'Rota mais longa ate cooperativa na soja',
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    },
+    {
+      id: makeId(),
+      safra_id: safraAtual.id,
+      propriedade_id: propriedade.id,
+      armazem_id: armazemSede.id,
+      valor_por_saca: 2.2,
+      observacao: 'Rota curta para silo da sede no milho',
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    },
+    {
+      id: makeId(),
+      safra_id: safraAtual.id,
+      propriedade_id: propriedade.id,
+      armazem_id: armazemCoop.id,
+      valor_por_saca: 2.55,
+      observacao: 'Rota mais longa ate cooperativa no milho',
       created_at: now,
       updated_at: now,
       created_by: userId,
@@ -4765,23 +4928,23 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     await db.tarifas_frete_rota.put(tarifa)
     await queueOp('tarifas_frete_rota', tarifa.id, tarifa)
   }
-  const tarifaPorRota = new Map(tarifas.map((tarifa) => [rotaFreteKey(tarifa.propriedade_id, tarifa.armazem_id), tarifa.valor_por_saca]))
+  const tarifaPorRota = new Map(tarifas.map((tarifa) => [`${tarifa.safra_id}:${rotaFreteKey(tarifa.propriedade_id, tarifa.armazem_id)}`, tarifa.valor_por_saca]))
 
-  const cargasTeste = [
-    ['2026-05-22', caminhaoA.id, talhaoNorte.id, produtorPaulo.id, sojaBmx.id, armazemSede.id, 36500, 34200],
-    ['2026-05-23', caminhaoB.id, talhaoSul.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 35800, 33100],
-    ['2026-05-24', caminhaoA.id, talhaoNorte.id, produtorJoao.id, sojaBmx.id, armazemCoop.id, 37200, 34800],
-    ['2026-05-26', caminhaoB.id, talhaoOeste.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 34400, 31900],
-    ['2026-05-28', caminhaoA.id, talhaoSul.id, produtorJoao.id, sojaBmx.id, armazemCoop.id, 38100, 35600],
-    ['2026-05-30', caminhaoB.id, talhaoNorte.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 35200, 32700],
-    ['2026-06-02', caminhaoA.id, talhaoOeste.id, produtorJoao.id, milho.id, armazemCoop.id, 36800, 34300],
-    ['2026-06-04', caminhaoB.id, talhaoSul.id, produtorPaulo.id, sojaBmx.id, armazemSede.id, 35000, 32400]
-  ] as const
-
-  for (const [data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido] of cargasTeste) {
+  const salvarCargaTeste = async (
+    safraId: string,
+    data: string,
+    placa: string,
+    talhaoId: string,
+    produtorId: string,
+    variedadeId: string,
+    armazemId: string,
+    bruto: number,
+    liquido: number
+  ) => {
+    const valorPorSaca = tarifaPorRota.get(`${safraId}:${rotaFreteKey(propriedade.id, armazemId)}`) ?? 0
     const carga: Carga = {
       id: makeId(),
-      safra_id: safra.id,
+      safra_id: safraId,
       data,
       placa,
       propriedade_id: propriedade.id,
@@ -4792,8 +4955,8 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
       peso_bruto_kg: bruto,
       peso_liquido_kg: liquido,
       sacas: toSacas(liquido),
-      frete_valor_por_saca: tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0,
-      frete_valor_total: calcularFreteCarga(bruto, tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0),
+      frete_valor_por_saca: valorPorSaca,
+      frete_valor_total: calcularFreteCarga(bruto, valorPorSaca),
       sync_status: 'pending_sync',
       created_at: now,
       updated_at: now,
@@ -4815,6 +4978,51 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     })
   }
 
+  const cargasSafra2026 = [
+    ['2026-05-22', caminhaoA.id, talhaoNorte.id, produtorPaulo.id, sojaBmx.id, armazemSede.id, 36500, 34200],
+    ['2026-05-23', caminhaoB.id, talhaoSul.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 35800, 33100],
+    ['2026-05-24', caminhaoA.id, talhaoNorte.id, produtorJoao.id, sojaBmx.id, armazemCoop.id, 37200, 34800],
+    ['2026-05-26', caminhaoB.id, talhaoOeste.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 34400, 31900]
+  ] as const
+  for (const [data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido] of cargasSafra2026) {
+    await salvarCargaTeste(safraAnterior.id, data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido)
+  }
+
+  const saldoInicialAtual = 120
+  const estoqueInicial: EstoqueArmazem = {
+    id: makeId(),
+    safra_id: safraAtual.id,
+    armazem_id: armazemSede.id,
+    saldo_sacas: saldoInicialAtual,
+    created_at: now,
+    updated_at: now,
+    created_by: userId,
+    updated_by: userId,
+    sync_status: 'pending_sync'
+  }
+  await db.estoque_armazem.put(estoqueInicial)
+  await queueOp('estoque_armazem', estoqueInicial.id, estoqueInicial)
+  await registrarMovimentoEstoque({
+    userId,
+    safraId: safraAtual.id,
+    tipo: 'entrada',
+    armazemId: armazemSede.id,
+    sacas: saldoInicialAtual,
+    origem: 'manual',
+    referenciaId: estoqueInicial.id,
+    motivo: 'Saldo inicial da safra'
+  })
+
+  const cargasSafra2027 = [
+    ['2027-01-12', caminhaoA.id, talhaoSul.id, produtorJoao.id, milho.id, armazemCoop.id, 38100, 35600],
+    ['2027-01-15', caminhaoB.id, talhaoNorte.id, produtorPaulo.id, milho.id, armazemSede.id, 35200, 32700],
+    ['2027-01-18', caminhaoA.id, talhaoOeste.id, produtorJoao.id, milho.id, armazemCoop.id, 36800, 34300],
+    ['2027-01-21', caminhaoB.id, talhaoSul.id, produtorPaulo.id, milho.id, armazemSede.id, 35000, 32400]
+  ] as const
+  for (const [data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido] of cargasSafra2027) {
+    await salvarCargaTeste(safraAtual.id, data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido)
+  }
+
   const areas: AreaVariedadeTalhao[] = [
     { id: makeId(), talhao_id: talhaoNorte.id, variedade_id: sojaBmx.id, area_ha: 24, created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
     { id: makeId(), talhao_id: talhaoNorte.id, variedade_id: sojaM7110.id, area_ha: 18, created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
@@ -4826,20 +5034,19 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   }
 
   const fretes: FreteLancamento[] = [
-    { id: makeId(), safra_id: safra.id, caminhao_id: caminhaoA.id, tipo: 'diesel', data: '2026-05-24', litros: 120, preco_litro: 5.85, valor_total: calcularValorDiesel(120, 5.85), observacao: 'Abastecida na sede', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
-    { id: makeId(), safra_id: safra.id, caminhao_id: caminhaoA.id, tipo: 'diesel', data: '2026-05-30', litros: 95, preco_litro: 5.99, valor_total: calcularValorDiesel(95, 5.99), observacao: 'Segundo abastecimento', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
-    { id: makeId(), safra_id: safra.id, caminhao_id: caminhaoA.id, tipo: 'vale', data: '2026-06-01', litros: null, preco_litro: null, valor_total: 500, observacao: 'Vale para despesas da viagem', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
-    { id: makeId(), safra_id: safra.id, caminhao_id: caminhaoB.id, tipo: 'diesel', data: '2026-05-25', litros: 110, preco_litro: 5.9, valor_total: calcularValorDiesel(110, 5.9), observacao: 'Abastecida patio', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
-    { id: makeId(), safra_id: safra.id, caminhao_id: caminhaoB.id, tipo: 'vale', data: '2026-06-03', litros: null, preco_litro: null, valor_total: 350, observacao: 'Adiantamento em dinheiro', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' }
+    { id: makeId(), safra_id: safraAnterior.id, caminhao_id: caminhaoA.id, tipo: 'diesel', data: '2026-05-24', litros: 120, preco_litro: 5.85, valor_total: calcularValorDiesel(120, 5.85), observacao: 'Abastecida na sede', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
+    { id: makeId(), safra_id: safraAnterior.id, caminhao_id: caminhaoA.id, tipo: 'vale', data: '2026-06-01', litros: null, preco_litro: null, valor_total: 500, observacao: 'Vale para despesas da viagem', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
+    { id: makeId(), safra_id: safraAtual.id, caminhao_id: caminhaoB.id, tipo: 'diesel', data: '2027-01-16', litros: 110, preco_litro: 6.1, valor_total: calcularValorDiesel(110, 6.1), observacao: 'Abastecida patio', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' },
+    { id: makeId(), safra_id: safraAtual.id, caminhao_id: caminhaoB.id, tipo: 'vale', data: '2027-01-22', litros: null, preco_litro: null, valor_total: 350, observacao: 'Adiantamento em dinheiro', created_at: now, updated_at: now, created_by: userId, updated_by: userId, sync_status: 'pending_sync' }
   ]
   for (const frete of fretes) {
     await db.frete_lancamentos.put(frete)
     await queueOp('frete_lancamentos', frete.id, frete)
   }
 
-  const venda: VendaGrao = {
+  const vendaAnterior: VendaGrao = {
       id: makeId(),
-      safra_id: safra.id,
+      safra_id: safraAnterior.id,
       data: '2026-06-05',
     produtor_id: produtorPaulo.id,
     armazem_cliente_id: armazemSede.id,
@@ -4853,23 +5060,53 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     created_by: userId,
     updated_by: userId
   }
-  await db.venda_grao.put(venda)
-  await queueOp('venda_grao', venda.id, venda)
-  await aplicarSaldoEstoque(userId, venda.safra_id, venda.armazem_cliente_id, -venda.sacas)
+  await db.venda_grao.put(vendaAnterior)
+  await queueOp('venda_grao', vendaAnterior.id, vendaAnterior)
+  await aplicarSaldoEstoque(userId, vendaAnterior.safra_id, vendaAnterior.armazem_cliente_id, -vendaAnterior.sacas)
   await registrarMovimentoEstoque({
     userId,
-    safraId: venda.safra_id,
+    safraId: vendaAnterior.safra_id,
     tipo: 'saida',
-    armazemId: venda.armazem_cliente_id,
-    sacas: venda.sacas,
+    armazemId: vendaAnterior.armazem_cliente_id,
+    sacas: vendaAnterior.sacas,
     origem: 'venda',
-    referenciaId: venda.id,
+    referenciaId: vendaAnterior.id,
+    motivo: 'Venda de teste'
+  })
+
+  const vendaAtual: VendaGrao = {
+    id: makeId(),
+    safra_id: safraAtual.id,
+    data: '2027-01-25',
+    produtor_id: produtorJoao.id,
+    armazem_cliente_id: armazemCoop.id,
+    sacas: 180,
+    valor_por_saca: 129,
+    valor_total: 23220,
+    status: 'ativa',
+    sync_status: 'pending_sync',
+    created_at: now,
+    updated_at: now,
+    created_by: userId,
+    updated_by: userId
+  }
+  await db.venda_grao.put(vendaAtual)
+  await queueOp('venda_grao', vendaAtual.id, vendaAtual)
+  await aplicarSaldoEstoque(userId, vendaAtual.safra_id, vendaAtual.armazem_cliente_id, -vendaAtual.sacas)
+  await registrarMovimentoEstoque({
+    userId,
+    safraId: vendaAtual.safra_id,
+    tipo: 'saida',
+    armazemId: vendaAtual.armazem_cliente_id,
+    sacas: vendaAtual.sacas,
+    origem: 'venda',
+    referenciaId: vendaAtual.id,
     motivo: 'Venda de teste'
   })
 
   return {
     created: true,
-    message: 'Dados de teste carregados: cadastros, 8 cargas, safra, diesel, vales e venda.'
+    message: 'Dados de teste carregados: 2 safras, saldo inicial, cargas, fretes e vendas para validar a versao nova.'
   }
 }
 
