@@ -1,6 +1,6 @@
 import { db } from './db'
 import { hasSupabase, supabase } from './supabase'
-import type { BaseEntity, Carga, PendingOp, Talhao, TarifaFreteRota } from './types'
+import type { BaseEntity, Carga, PendingOp, Safra, Talhao, TarifaFreteRota } from './types'
 
 const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items', 'area_variedade_talhao', 'safras', 'frete_lancamentos', 'tarifas_frete_rota'] as const
 
@@ -16,8 +16,16 @@ function normalizePayloadForCloud(table: string, payload: Record<string, unknown
 function normalizeCargaFromCloud(row: Record<string, unknown>) {
   return {
     ...row,
+    safra_id: typeof row.safra_id === 'string' ? row.safra_id : '',
     frete_valor_por_saca: typeof row.frete_valor_por_saca === 'number' ? row.frete_valor_por_saca : 0,
     frete_valor_total: typeof row.frete_valor_total === 'number' ? row.frete_valor_total : 0
+  }
+}
+
+function normalizeSafraFromCloud(row: Record<string, unknown>) {
+  return {
+    ...row,
+    ativa: typeof row.ativa === 'boolean' ? row.ativa : false
   }
 }
 
@@ -40,13 +48,15 @@ async function pushOp(op: PendingOp) {
   }
   if (table === 'cargas') {
     const carga = op.payload as Carga
+    const safra = await db.safras.get(carga.safra_id)
     const propriedade = await db.propriedades.get(carga.propriedade_id)
     const talhao = await db.talhoes.get(carga.talhao_id)
     const produtor = await db.produtores.get(carga.produtor_id)
     const variedade = await db.variedades.get(carga.variedade_id)
     const armazem = await db.armazens.get(carga.armazem_id)
 
-    const deps: Array<{ table: 'propriedades' | 'talhoes' | 'produtores' | 'variedades' | 'armazens'; row: BaseEntity | Talhao | undefined }> = [
+    const deps: Array<{ table: 'safras' | 'propriedades' | 'talhoes' | 'produtores' | 'variedades' | 'armazens'; row: Safra | BaseEntity | Talhao | undefined }> = [
+      { table: 'safras', row: safra },
       { table: 'propriedades', row: propriedade },
       { table: 'talhoes', row: talhao },
       { table: 'produtores', row: produtor },
@@ -67,10 +77,12 @@ async function pushOp(op: PendingOp) {
     }
   }
   if (table === 'venda_grao') {
-    const venda = op.payload as { produtor_id: string; armazem_cliente_id: string }
+    const venda = op.payload as { safra_id: string; produtor_id: string; armazem_cliente_id: string }
+    const safra = await db.safras.get(venda.safra_id)
     const produtor = await db.produtores.get(venda.produtor_id)
     const armazem = await db.armazens.get(venda.armazem_cliente_id)
-    const deps: Array<{ table: 'produtores' | 'armazens'; row: BaseEntity | undefined }> = [
+    const deps: Array<{ table: 'safras' | 'produtores' | 'armazens'; row: Safra | BaseEntity | undefined }> = [
+      { table: 'safras', row: safra },
       { table: 'produtores', row: produtor },
       { table: 'armazens', row: armazem }
     ]
@@ -90,7 +102,7 @@ async function pushOp(op: PendingOp) {
     const lancamento = op.payload as { safra_id: string; caminhao_id: string }
     const safra = await db.safras.get(lancamento.safra_id)
     const caminhao = await db.caminhoes.get(lancamento.caminhao_id)
-    const deps: Array<{ table: 'safras' | 'caminhoes'; row: BaseEntity | undefined }> = [
+    const deps: Array<{ table: 'safras' | 'caminhoes'; row: Safra | BaseEntity | undefined }> = [
       { table: 'safras', row: safra },
       { table: 'caminhoes', row: caminhao }
     ]
@@ -108,10 +120,52 @@ async function pushOp(op: PendingOp) {
   }
   if (table === 'tarifas_frete_rota') {
     const tarifa = op.payload as TarifaFreteRota
+    const safra = await db.safras.get(tarifa.safra_id)
     const propriedade = await db.propriedades.get(tarifa.propriedade_id)
     const armazem = await db.armazens.get(tarifa.armazem_id)
-    const deps: Array<{ table: 'propriedades' | 'armazens'; row: BaseEntity | undefined }> = [
+    const deps: Array<{ table: 'safras' | 'propriedades' | 'armazens'; row: Safra | BaseEntity | undefined }> = [
+      { table: 'safras', row: safra },
       { table: 'propriedades', row: propriedade },
+      { table: 'armazens', row: armazem }
+    ]
+    for (const dep of deps) {
+      if (!dep.row) continue
+      const { error: depError } = await supabase.from(dep.table).upsert(dep.row as never, { onConflict: 'id' })
+      if (depError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: `dependencia ${dep.table}: ${depError.message}`
+        })
+        return false
+      }
+    }
+  }
+  if (table === 'estoque_armazem') {
+    const estoque = op.payload as { safra_id: string; armazem_id: string }
+    const safra = await db.safras.get(estoque.safra_id)
+    const armazem = await db.armazens.get(estoque.armazem_id)
+    const deps: Array<{ table: 'safras' | 'armazens'; row: Safra | BaseEntity | undefined }> = [
+      { table: 'safras', row: safra },
+      { table: 'armazens', row: armazem }
+    ]
+    for (const dep of deps) {
+      if (!dep.row) continue
+      const { error: depError } = await supabase.from(dep.table).upsert(dep.row as never, { onConflict: 'id' })
+      if (depError) {
+        await db.pending_ops.update(op.id, {
+          retries: op.retries + 1,
+          error: `dependencia ${dep.table}: ${depError.message}`
+        })
+        return false
+      }
+    }
+  }
+  if (table === 'movimento_estoque') {
+    const movimento = op.payload as { safra_id: string; armazem_id: string }
+    const safra = await db.safras.get(movimento.safra_id)
+    const armazem = await db.armazens.get(movimento.armazem_id)
+    const deps: Array<{ table: 'safras' | 'armazens'; row: Safra | BaseEntity | undefined }> = [
+      { table: 'safras', row: safra },
       { table: 'armazens', row: armazem }
     ]
     for (const dep of deps) {
@@ -242,7 +296,7 @@ async function pullFromCloud() {
     }
 
     pulledData[table] = (data as Array<Record<string, unknown>>).map((row) => ({
-      ...(table === 'cargas' ? normalizeCargaFromCloud(row) : row),
+      ...(table === 'cargas' ? normalizeCargaFromCloud(row) : table === 'safras' ? normalizeSafraFromCloud(row) : row),
       sync_status: 'synced'
     }))
   }

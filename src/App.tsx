@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { db } from './core/db'
 import { hasSupabase, supabase } from './core/supabase'
@@ -19,6 +19,7 @@ type Notice = { type: NoticeType; message: string } | null
 type PilotConfig = { ativo: boolean; inicio: string; fim: string; ownerEmail: string }
 
 const initialFilters: Filters = {}
+const LEGACY_SAFRA_NOME = 'Safra Legado'
 
 function isUuidLike(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -31,9 +32,26 @@ function rotaFreteKey(propriedadeId: string, armazemId: string) {
 function normalizarCargaFrete(carga: Carga): Carga {
   return {
     ...carga,
+    safra_id: typeof carga.safra_id === 'string' ? carga.safra_id : '',
     frete_valor_por_saca: Number.isFinite(carga.frete_valor_por_saca) ? carga.frete_valor_por_saca : 0,
     frete_valor_total: Number.isFinite(carga.frete_valor_total) ? carga.frete_valor_total : 0
   }
+}
+
+function normalizarSafra(safra: Safra): Safra {
+  return {
+    ...safra,
+    ativa: Boolean(safra.ativa)
+  }
+}
+
+function filtrarPorSafra<T extends { safra_id: string }>(rows: T[], safraId: string) {
+  if (!safraId) return []
+  return rows.filter((row) => row.safra_id === safraId)
+}
+
+function storageKeySafraAtiva(userId: string) {
+  return `active_safra_${userId}`
 }
 
 function pathLinha(values: number[], width: number, height: number) {
@@ -167,6 +185,12 @@ function isAjusteManualValido(m: MovimentoEstoque) {
   return motivo.startsWith('ajuste manual:')
 }
 
+function isSaldoInicialSafra(m: MovimentoEstoque) {
+  if (m.origem !== 'manual') return false
+  const motivo = (m.motivo ?? '').trim().toLowerCase()
+  return motivo === 'saldo inicial da safra'
+}
+
 async function registrarAuditoria(actorUserId: string, action: string, details?: string) {
   const row: AuditLog = {
     id: makeId(),
@@ -216,6 +240,8 @@ function App() {
   const [userRole, setUserRole] = useState<UserRole>('proprietario')
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [pilotConfig, setPilotConfig] = useState<PilotConfig>(() => loadPilotConfigFromStorage())
+  const [safrasGlobais, setSafrasGlobais] = useState<Safra[]>([])
+  const [activeSafraId, setActiveSafraId] = useState('')
 
   const isOwner = useCallback((emailValue: string) => {
     const owner = pilotConfig.ownerEmail.trim().toLowerCase()
@@ -342,6 +368,33 @@ function App() {
     window.setTimeout(() => setNotice(null), 2600)
   }
 
+  const atualizarSafrasGlobais = useCallback(async (userId: string) => {
+    const rows = (await db.safras.toArray())
+      .filter((item) => item.created_by === userId)
+      .map(normalizarSafra)
+      .sort((a, b) => `${b.ano}-${b.data_inicio}`.localeCompare(`${a.ano}-${a.data_inicio}`))
+    setSafrasGlobais(rows)
+    const persisted = localStorage.getItem(storageKeySafraAtiva(userId)) ?? ''
+    const ativaDb = rows.find((item) => item.ativa)?.id ?? ''
+    const fallback = rows[0]?.id ?? ''
+    const next = ativaDb || (rows.some((item) => item.id === persisted) ? persisted : fallback)
+    setActiveSafraId(next)
+    if (next) localStorage.setItem(storageKeySafraAtiva(userId), next)
+  }, [])
+
+  const selecionarSafraGlobal = useCallback(async (userId: string, safraId: string) => {
+    setActiveSafraId(safraId)
+    if (safraId) localStorage.setItem(storageKeySafraAtiva(userId), safraId)
+    else localStorage.removeItem(storageKeySafraAtiva(userId))
+    await definirSafraAtiva(userId, safraId)
+    await atualizarSafrasGlobais(userId)
+    try {
+      await runSync()
+    } catch {
+      // Keep the local active safra switch even if cloud sync is temporarily unavailable.
+    }
+  }, [atualizarSafrasGlobais])
+
   async function login() {
     setAuthError('')
     if (hasSupabase && supabase) {
@@ -452,6 +505,19 @@ function App() {
     setSession(null)
   }
 
+  useEffect(() => {
+    if (!session) return
+    void (async () => {
+      const migration = await migrarDadosLegadosParaSafra(session.id)
+      if (migration.changed) {
+        await atualizarSafrasGlobais(session.id)
+        setRefreshTick((value) => value + 1)
+        return
+      }
+      await atualizarSafrasGlobais(session.id)
+    })()
+  }, [atualizarSafrasGlobais, refreshTick, session])
+
   if (!session) {
     return (
       <main className="auth-screen">
@@ -476,6 +542,8 @@ function App() {
     )
   }
 
+  const safraAtiva = safrasGlobais.find((item) => item.id === activeSafraId)
+
   return (
     <main className="app-shell">
       {notice && <div className={`notice ${notice.type}`}>{notice.message}</div>}
@@ -483,9 +551,17 @@ function App() {
       <header className="topbar">
         <div>
           <h1>Gestao de Colheita</h1>
-          <p>{session.email} | Perfil: {userRole}</p>
+          <p>{session.email} | Perfil: {userRole}{safraAtiva ? ` | Safra atual: ${safraAtiva.nome} (${safraAtiva.cultura} ${safraAtiva.ano})` : ''}</p>
         </div>
         <div className="actions">
+          <select value={activeSafraId} onChange={(e) => { void selecionarSafraGlobal(session.id, e.target.value) }}>
+            <option value="">Selecione a safra</option>
+            {safrasGlobais.map((safra) => (
+              <option key={safra.id} value={safra.id}>
+                {`${safra.nome} | ${safra.cultura} ${safra.ano}${safra.ativa ? ' | ativa' : ''}`}
+              </option>
+            ))}
+          </select>
           <button onClick={() => void handleSyncClick()}>Sincronizar</button>
           <button onClick={logout}>Sair</button>
         </div>
@@ -504,13 +580,13 @@ function App() {
         <button onClick={() => setTab('config')} className={tab === 'config' ? 'active' : ''}>Assistente</button>
       </nav>
 
-      {tab === 'dashboard' && <Dashboard refreshTick={refreshTick} />}
-      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'dashboard' && <Dashboard refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
+      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} />}
-      {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} onNotify={notify} />}
-      {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} onSaved={triggerRefresh} onNotify={notify} />}
+      {tab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
+      {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} activeSafraId={activeSafraId} setActiveSafraId={(safraId) => { void selecionarSafraGlobal(session.id, safraId) }} onNotify={notify} />}
+      {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
       {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
       {tab === 'operacao' && <OperacaoSaas user={session} onNotify={notify} />}
       {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwner(session.email)} />}
@@ -1635,14 +1711,133 @@ async function queueDeleteOp(table: string, recordId: string) {
   })
 }
 
-async function getOrCreateEstoque(armazemId: string, userId: string) {
-  const existing = await db.estoque_armazem.where('armazem_id').equals(armazemId).first()
+async function definirSafraAtiva(userId: string, safraId: string) {
+  const safras = (await db.safras.toArray()).filter((item) => item.created_by === userId).map(normalizarSafra)
+  for (const safra of safras) {
+    const ativa = safra.id === safraId
+    if (safra.ativa === ativa) continue
+    const updated: Safra = {
+      ...safra,
+      ativa,
+      updated_at: nowIso(),
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.safras.put(updated)
+    await queueOp('safras', updated.id, updated)
+  }
+}
+
+async function migrarDadosLegadosParaSafra(userId: string) {
+  const [safrasRaw, cargasRaw, estoquesRaw, movimentosRaw, vendasRaw, tarifasRaw] = await Promise.all([
+    db.safras.toArray(),
+    db.cargas.toArray(),
+    db.estoque_armazem.toArray(),
+    db.movimento_estoque.toArray(),
+    db.venda_grao.toArray(),
+    db.tarifas_frete_rota.toArray()
+  ])
+
+  const safras = safrasRaw.filter((item) => item.created_by === userId).map(normalizarSafra)
+  const cargas = cargasRaw.filter((item) => item.created_by === userId).map(normalizarCargaFrete)
+  const estoques = estoquesRaw.filter((item) => item.created_by === userId)
+  const movimentos = movimentosRaw.filter((item) => item.created_by === userId)
+  const vendas = vendasRaw.filter((item) => item.created_by === userId)
+  const tarifas = tarifasRaw.filter((item) => item.created_by === userId)
+
+  const temOrfaos = cargas.some((item) => !item.safra_id)
+    || estoques.some((item) => !item.safra_id)
+    || movimentos.some((item) => !item.safra_id)
+    || vendas.some((item) => !item.safra_id)
+    || tarifas.some((item) => !item.safra_id)
+
+  let legacy = safras.find((item) => item.nome === LEGACY_SAFRA_NOME)
+  let changed = false
+
+  if (temOrfaos && !legacy) {
+    const now = nowIso()
+    legacy = {
+      id: makeId(),
+      nome: LEGACY_SAFRA_NOME,
+      cultura: 'legado',
+      ano: new Date().getFullYear().toString(),
+      ativa: safras.length === 0,
+      data_inicio: '2020-01-01',
+      data_fim: localDateYmd(),
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.safras.put(legacy)
+    await queueOp('safras', legacy.id, legacy)
+    safras.push(legacy)
+    changed = true
+  }
+
+  if (legacy) {
+    for (const carga of cargas) {
+      if (carga.safra_id) continue
+      const updated: Carga = { ...carga, safra_id: legacy.id, updated_at: nowIso(), updated_by: userId, sync_status: 'pending_sync' }
+      await db.cargas.put(updated)
+      await queueOp('cargas', updated.id, updated)
+      changed = true
+    }
+    for (const estoque of estoques) {
+      if (estoque.safra_id) continue
+      const updated: EstoqueArmazem = { ...estoque, safra_id: legacy.id, updated_at: nowIso(), updated_by: userId, sync_status: 'pending_sync' }
+      await db.estoque_armazem.put(updated)
+      await queueOp('estoque_armazem', updated.id, updated)
+      changed = true
+    }
+    for (const movimento of movimentos) {
+      if (movimento.safra_id) continue
+      const updated: MovimentoEstoque = { ...movimento, safra_id: legacy.id, updated_at: nowIso(), updated_by: userId, sync_status: 'pending_sync' }
+      await db.movimento_estoque.put(updated)
+      await queueOp('movimento_estoque', updated.id, updated)
+      changed = true
+    }
+    for (const venda of vendas) {
+      if (venda.safra_id) continue
+      const updated: VendaGrao = { ...venda, safra_id: legacy.id, updated_at: nowIso(), updated_by: userId, sync_status: 'pending_sync' }
+      await db.venda_grao.put(updated)
+      await queueOp('venda_grao', updated.id, updated)
+      changed = true
+    }
+    for (const tarifa of tarifas) {
+      if (tarifa.safra_id) continue
+      const updated: TarifaFreteRota = { ...tarifa, safra_id: legacy.id, updated_at: nowIso(), updated_by: userId, sync_status: 'pending_sync' }
+      await db.tarifas_frete_rota.put(updated)
+      await queueOp('tarifas_frete_rota', updated.id, updated)
+      changed = true
+    }
+  }
+
+  let safraAtiva = safras.find((item) => item.ativa)
+  if (!safraAtiva && safras.length > 0) {
+    const preferida = [...safras]
+      .sort((a, b) => `${b.ano}-${b.data_inicio}`.localeCompare(`${a.ano}-${a.data_inicio}`))
+      .find((item) => item.nome !== LEGACY_SAFRA_NOME) ?? safras[0]
+    await definirSafraAtiva(userId, preferida.id)
+    changed = true
+    safraAtiva = preferida
+  }
+
+  return { changed, safraAtivaId: safraAtiva?.id ?? '' }
+}
+
+async function getOrCreateEstoque(armazemId: string, safraId: string, userId: string) {
+  const existing = await db.estoque_armazem.where('[safra_id+armazem_id]').equals([safraId, armazemId]).first()
   if (existing) return existing
 
   const now = nowIso()
-  const saldoInicial = (await db.cargas.where('armazem_id').equals(armazemId).toArray()).reduce((acc, c) => acc + c.sacas, 0)
+  const saldoInicial = (await db.cargas.where('armazem_id').equals(armazemId).toArray())
+    .filter((c) => c.safra_id === safraId)
+    .reduce((acc, c) => acc + c.sacas, 0)
   const novo: EstoqueArmazem = {
     id: makeId(),
+    safra_id: safraId,
     armazem_id: armazemId,
     saldo_sacas: saldoInicial,
     sync_status: 'pending_sync',
@@ -1658,6 +1853,7 @@ async function getOrCreateEstoque(armazemId: string, userId: string) {
 
 async function registrarMovimentoEstoque(input: {
   userId: string
+  safraId: string
   tipo: MovimentoEstoque['tipo']
   armazemId: string
   sacas: number
@@ -1668,6 +1864,7 @@ async function registrarMovimentoEstoque(input: {
   const now = nowIso()
   const mov: MovimentoEstoque = {
     id: makeId(),
+    safra_id: input.safraId,
     tipo: input.tipo,
     armazem_id: input.armazemId,
     sacas: input.sacas,
@@ -1684,8 +1881,8 @@ async function registrarMovimentoEstoque(input: {
   await queueOp('movimento_estoque', mov.id, mov)
 }
 
-async function aplicarSaldoEstoque(userId: string, armazemId: string, deltaSacas: number) {
-  const estoque = await getOrCreateEstoque(armazemId, userId)
+async function aplicarSaldoEstoque(userId: string, safraId: string, armazemId: string, deltaSacas: number) {
+  const estoque = await getOrCreateEstoque(armazemId, safraId, userId)
   const now = nowIso()
   const updated: EstoqueArmazem = {
     ...estoque,
@@ -1932,11 +2129,15 @@ function Cadastros({ userId, onSaved, onNotify }: { userId: string; onSaved: () 
 function NovaCarga({
   userId,
   refreshTick,
+  activeSafraId,
+  activeSafra,
   onSaved,
   onNotify
 }: {
   userId: string
   refreshTick: number
+  activeSafraId: string
+  activeSafra?: Safra
   onSaved: () => void
   onNotify: (type: NoticeType, message: string) => void
 }) {
@@ -1979,13 +2180,13 @@ function NovaCarga({
       mapa.set(c.id, c)
     }
 
-    const base = Array.from(mapa.values())
+    const base = Array.from(mapa.values()).filter((c) => !activeSafraId || c.safra_id === activeSafraId)
     setQtdCargasLocal(base.length)
     const ultimas = base
       .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
       .slice(0, 3)
     setUltimasCargas(ultimas)
-  }, [])
+  }, [activeSafraId])
 
   useEffect(() => {
     void Promise.all([
@@ -2009,7 +2210,7 @@ function NovaCarga({
         if (!c?.id) continue
         mapa.set(c.id, c)
       }
-      const base = Array.from(mapa.values())
+      const base = Array.from(mapa.values()).filter((c) => !activeSafraId || c.safra_id === activeSafraId)
       setQtdCargasLocal(base.length)
       setUltimasCargas(
         base
@@ -2017,7 +2218,7 @@ function NovaCarga({
           .slice(0, 3)
       )
     })
-  }, [refreshTick, userId])
+  }, [activeSafraId, refreshTick, userId])
 
   const sacas = useMemo(() => {
     const liquido = parsePtBrNumber(pesoLiquido || '0')
@@ -2026,8 +2227,8 @@ function NovaCarga({
   const sacasFrete = useMemo(() => calcularSacasFrete(parsePtBrNumber(pesoBruto || '0')), [pesoBruto])
 
   const tarifaSelecionada = useMemo(
-    () => tarifasFrete.find((tarifa) => tarifa.propriedade_id === propriedadeId && tarifa.armazem_id === armazemId),
-    [armazemId, propriedadeId, tarifasFrete]
+    () => tarifasFrete.find((tarifa) => tarifa.safra_id === activeSafraId && tarifa.propriedade_id === propriedadeId && tarifa.armazem_id === armazemId),
+    [activeSafraId, armazemId, propriedadeId, tarifasFrete]
   )
   const valorFreteAtual = useMemo(
     () => calcularFreteCarga(parsePtBrNumber(pesoBruto || '0'), tarifaSelecionada?.valor_por_saca ?? 0),
@@ -2060,6 +2261,10 @@ function NovaCarga({
   }
 
   async function salvar() {
+    if (!activeSafraId) {
+      onNotify('error', 'Selecione uma safra ativa antes de registrar cargas.')
+      return
+    }
     if (modoDividido) {
       const brutoTotal = parsePtBrNumber(pesoBruto)
       if (!data || !placa || !propriedadeId || !produtorId || !armazemId) {
@@ -2103,6 +2308,7 @@ function NovaCarga({
 
         const carga: Carga = {
           id: makeId(),
+          safra_id: activeSafraId,
           data,
           placa,
           propriedade_id: propriedadeId,
@@ -2123,9 +2329,10 @@ function NovaCarga({
         }
         await db.cargas.put(carga)
         await queueOp('cargas', carga.id, carga)
-        await aplicarSaldoEstoque(userId, carga.armazem_id, carga.sacas)
+        await aplicarSaldoEstoque(userId, activeSafraId, carga.armazem_id, carga.sacas)
         await registrarMovimentoEstoque({
           userId,
+          safraId: activeSafraId,
           tipo: 'entrada',
           armazemId: carga.armazem_id,
           sacas: carga.sacas,
@@ -2168,6 +2375,7 @@ function NovaCarga({
     const brutoAtual = parsePtBrNumber(pesoBruto)
     const liquidoAtual = parsePtBrNumber(pesoLiquido)
     const similares = (await db.cargas.toArray()).filter((c) => {
+      if (c.safra_id !== activeSafraId) return false
       if (c.data !== data) return false
       if (c.placa !== placa) return false
       const difBruto = Math.abs(c.peso_bruto_kg - brutoAtual)
@@ -2187,6 +2395,7 @@ function NovaCarga({
     const now = nowIso()
     const carga: Carga = {
       id: makeId(),
+      safra_id: activeSafraId,
       data,
       placa,
       propriedade_id: propriedadeId,
@@ -2208,9 +2417,10 @@ function NovaCarga({
 
     await db.cargas.put(carga)
     await queueOp('cargas', carga.id, carga)
-    await aplicarSaldoEstoque(userId, carga.armazem_id, carga.sacas)
+    await aplicarSaldoEstoque(userId, activeSafraId, carga.armazem_id, carga.sacas)
     await registrarMovimentoEstoque({
       userId,
+      safraId: activeSafraId,
       tipo: 'entrada',
       armazemId: carga.armazem_id,
       sacas: carga.sacas,
@@ -2248,6 +2458,7 @@ function NovaCarga({
         <input type="checkbox" checked={modoDividido} onChange={(e) => setModoDividido(e.target.checked)} /> Dividir carga por talhao e variedade
       </label>
       {!modoDividido && <p className="info">Sacas (automatico): <strong>{sacas.toFixed(2)}</strong></p>}
+      <p className="info">Safra atual: <strong>{activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma selecionada'}</strong></p>
       <p className="info">
         Tarifa da rota: <strong>{tarifaSelecionada ? `R$ ${formatPtBrNumber(tarifaSelecionada.valor_por_saca)}/saca` : 'nao cadastrada'}</strong>
         {!modoDividido && ` | Sacas de frete (peso bruto): ${formatPtBrNumber(sacasFrete)} | Frete estimado desta carga: R$ ${formatPtBrNumber(valorFreteAtual)}`}
@@ -2308,7 +2519,7 @@ function SelectFromList({ label, value, onChange, items }: { label: string; valu
   )
 }
 
-function Dashboard({ refreshTick }: { refreshTick: number }) {
+function Dashboard({ refreshTick, activeSafraId, activeSafra }: { refreshTick: number; activeSafraId: string; activeSafra?: Safra }) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [talhoes, setTalhoes] = useState<Talhao[]>([])
   const [caminhoes, setCaminhoes] = useState<BaseEntity[]>([])
@@ -2325,19 +2536,20 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
     })
   }, [refreshTick])
 
-  const totalKg = cargas.reduce((acc, c) => acc + c.peso_liquido_kg, 0)
-  const totalSacas = cargas.reduce((acc, c) => acc + c.sacas, 0)
+  const cargasSafra = useMemo(() => filtrarPorSafra(cargas, activeSafraId), [activeSafraId, cargas])
+  const totalKg = cargasSafra.reduce((acc, c) => acc + c.peso_liquido_kg, 0)
+  const totalSacas = cargasSafra.reduce((acc, c) => acc + c.sacas, 0)
   const totalArea = talhoes.reduce((acc, t) => acc + t.area_ha, 0)
   const prodGeral = totalArea > 0 ? totalSacas / totalArea : 0
 
   const porTalhao = talhoes.map((t) => {
-    const subconjunto = cargas.filter((c) => c.talhao_id === t.id)
+    const subconjunto = cargasSafra.filter((c) => c.talhao_id === t.id)
     const sacas = subconjunto.reduce((acc, c) => acc + c.sacas, 0)
     return { nome: t.nome, valor: produtividadeSacasPorHa(sacas, t.area_ha) }
   }).filter((item) => item.valor > 0).sort((a, b) => b.valor - a.valor)
 
   const colheitaPorDia = Array.from(
-    cargas.reduce((mapa, carga) => {
+    cargasSafra.reduce((mapa, carga) => {
       mapa.set(carga.data, (mapa.get(carga.data) ?? 0) + carga.sacas)
       return mapa
     }, new Map<string, number>())
@@ -2346,7 +2558,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
     .map(([data, valor]) => ({ label: formatDateBr(data).slice(0, 5), value: Number(valor.toFixed(2)) }))
 
   const porProdutor = produtores.map((produtor) => {
-    const subconjunto = cargas.filter((carga) => carga.produtor_id === produtor.id)
+    const subconjunto = cargasSafra.filter((carga) => carga.produtor_id === produtor.id)
     return {
       label: produtor.nome,
       value: Number(subconjunto.reduce((acc, carga) => acc + carga.sacas, 0).toFixed(2))
@@ -2354,11 +2566,12 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   }).filter((item) => item.value > 0).sort((a, b) => b.value - a.value)
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
-  const cargasOrdenadas = [...cargas].sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
+  const cargasOrdenadas = [...cargasSafra].sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
 
   return (
     <section className="panel">
       <h2>Dashboard</h2>
+      <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="kpis">
         <article><span>Total liquido (kg)</span><strong>{totalKg.toFixed(2)}</strong></article>
         <article><span>Total em sacas</span><strong>{totalSacas.toFixed(2)}</strong></article>
@@ -2395,7 +2608,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   )
 }
 
-function Analises({ refreshTick, userId }: { refreshTick: number; userId: string }) {
+function Analises({ refreshTick, userId, activeSafraId, activeSafra }: { refreshTick: number; userId: string; activeSafraId: string; activeSafra?: Safra }) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [talhoes, setTalhoes] = useState<Talhao[]>([])
   const [variedades, setVariedades] = useState<BaseEntity[]>([])
@@ -2432,14 +2645,16 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
     })
   }, [refreshTick, userId])
 
-  const mediaGeralKg = cargas.length > 0 ? cargas.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / cargas.length : 0
-  const mediaGeralSacas = cargas.length > 0 ? cargas.reduce((acc, c) => acc + c.sacas, 0) / cargas.length : 0
+  const cargasSafra = useMemo(() => filtrarPorSafra(cargas, activeSafraId), [activeSafraId, cargas])
+
+  const mediaGeralKg = cargasSafra.length > 0 ? cargasSafra.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / cargasSafra.length : 0
+  const mediaGeralSacas = cargasSafra.length > 0 ? cargasSafra.reduce((acc, c) => acc + c.sacas, 0) / cargasSafra.length : 0
   const areaTotal = talhoes.reduce((acc, t) => acc + t.area_ha, 0)
-  const prodGeral = produtividadeSacasPorHa(cargas.reduce((acc, c) => acc + c.sacas, 0), areaTotal)
+  const prodGeral = produtividadeSacasPorHa(cargasSafra.reduce((acc, c) => acc + c.sacas, 0), areaTotal)
   const areaConfigMap = new Map(areasVarTalhao.map((a) => [`${a.talhao_id}::${a.variedade_id}`, a.area_ha]))
 
   const mediasTalhao = talhoes.map((t) => {
-    const items = cargas.filter((c) => c.talhao_id === t.id)
+    const items = cargasSafra.filter((c) => c.talhao_id === t.id)
     const mediaKg = items.length > 0 ? items.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / items.length : 0
     const mediaSacas = items.length > 0 ? items.reduce((acc, c) => acc + c.sacas, 0) / items.length : 0
     const totalSacasTalhao = items.reduce((acc, c) => acc + c.sacas, 0)
@@ -2448,7 +2663,7 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
   })
 
   const mediasVariedade = variedades.map((v) => {
-    const items = cargas.filter((c) => c.variedade_id === v.id)
+    const items = cargasSafra.filter((c) => c.variedade_id === v.id)
     const mediaKg = items.length > 0 ? items.reduce((acc, c) => acc + c.peso_liquido_kg, 0) / items.length : 0
     const mediaSacas = items.length > 0 ? items.reduce((acc, c) => acc + c.sacas, 0) / items.length : 0
     const pares = new Set(items.map((c) => `${c.talhao_id}::${v.id}`))
@@ -2459,14 +2674,14 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
   })
 
   const entregaPorProdutor = produtores.map((p) => {
-    const items = cargas.filter((c) => c.produtor_id === p.id)
+    const items = cargasSafra.filter((c) => c.produtor_id === p.id)
     const totalKg = items.reduce((acc, c) => acc + c.peso_liquido_kg, 0)
     const totalSacas = items.reduce((acc, c) => acc + c.sacas, 0)
     return { nome: p.nome, totalKg, totalSacas, viagens: items.length }
   })
 
   const cargasSelecionadas = talhoesSelecionados.length > 0
-    ? cargas.filter((c) => talhoesSelecionados.includes(c.talhao_id))
+    ? cargasSafra.filter((c) => talhoesSelecionados.includes(c.talhao_id))
     : []
   const talhoesSelecionadosObjs = talhoes.filter((t) => talhoesSelecionados.includes(t.id))
   const areaSelecionada = talhoesSelecionadosObjs.reduce((acc, t) => acc + t.area_ha, 0)
@@ -2479,7 +2694,7 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
   const prodSel = produtividadeSacasPorHa(cargasSelecionadas.reduce((acc, c) => acc + c.sacas, 0), areaSelecionada)
 
   const talhaoParaAnalise = cfgTalhaoId || talhoes[0]?.id || ''
-  const produtividadeVariedadeNoTalhao = calcProdutividadeVariedadeNoTalhao(cargas, areasVarTalhao, talhaoParaAnalise).map((r) => ({
+  const produtividadeVariedadeNoTalhao = calcProdutividadeVariedadeNoTalhao(cargasSafra, areasVarTalhao, talhaoParaAnalise).map((r) => ({
     variedadeId: r.variedade_id,
     variedade: variedades.find((v) => v.id === r.variedade_id)?.nome ?? r.variedade_id,
     sacasTotal: r.sacas_total,
@@ -2636,6 +2851,7 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
   return (
     <section className="panel">
       <h2>Analises de Medias e Produtividade</h2>
+      <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="kpis">
         <article><span>Media geral (kg/carga)</span><strong>{mediaGeralKg.toFixed(2)}</strong></article>
         <article><span>Media geral (sacas/carga)</span><strong>{mediaGeralSacas.toFixed(2)}</strong></article>
@@ -2755,11 +2971,15 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
 function ArmazenagemVendas({
   userId,
   refreshTick,
+  activeSafraId,
+  activeSafra,
   onSaved,
   onNotify
 }: {
   userId: string
   refreshTick: number
+  activeSafraId: string
+  activeSafra?: Safra
   onSaved: () => void
   onNotify: (type: NoticeType, message: string) => void
 }) {
@@ -2820,7 +3040,7 @@ function ArmazenagemVendas({
     ]).then(([ars, ps, cs, mov, ven]) => {
       setArmazens(ars.filter(isFromCurrentUser))
       setProdutores(ps.filter(isFromCurrentUser))
-      setCargas(cs.filter(isFromCurrentUser))
+      setCargas(cs.filter(isFromCurrentUser).map(normalizarCargaFrete))
       setMovimentos(mov.filter(isFromCurrentUser))
       setVendas(ven.filter(isFromCurrentUser))
     })
@@ -2836,24 +3056,28 @@ function ArmazenagemVendas({
     ])
     setArmazens(ars.filter(isFromCurrentUser))
     setProdutores(ps.filter(isFromCurrentUser))
-    setCargas(cs.filter(isFromCurrentUser))
+    setCargas(cs.filter(isFromCurrentUser).map(normalizarCargaFrete))
     setMovimentos(mov.filter(isFromCurrentUser))
     setVendas(ven.filter(isFromCurrentUser))
   }
 
+  const cargasSafra = useMemo(() => filtrarPorSafra(cargas, activeSafraId), [activeSafraId, cargas])
+  const movimentosSafra = useMemo(() => filtrarPorSafra(movimentos, activeSafraId), [activeSafraId, movimentos])
+  const vendasSafra = useMemo(() => filtrarPorSafra(vendas, activeSafraId), [activeSafraId, vendas])
+
   const nomeArmazem = new Map(armazens.map((a) => [a.id, a.nome]))
   const nomeProdutor = new Map(produtores.map((p) => [p.id, p.nome]))
   const saldoBasePorArmazem = new Map<string, number>()
-  for (const c of cargas) {
+  for (const c of cargasSafra) {
     saldoBasePorArmazem.set(c.armazem_id, (saldoBasePorArmazem.get(c.armazem_id) ?? 0) + c.sacas)
   }
-  for (const v of vendas) {
+  for (const v of vendasSafra) {
     if (v.status !== 'ativa') continue
     saldoBasePorArmazem.set(v.armazem_cliente_id, (saldoBasePorArmazem.get(v.armazem_cliente_id) ?? 0) - v.sacas)
   }
-  for (const m of movimentos) {
+  for (const m of movimentosSafra) {
     if (isMovimentoAutomaticoDeCarga(m)) continue
-    if (!isAjusteManualValido(m)) continue
+    if (!isAjusteManualValido(m) && !isSaldoInicialSafra(m)) continue
     if (m.tipo === 'entrada' || m.tipo === 'estorno') {
       saldoBasePorArmazem.set(m.armazem_id, (saldoBasePorArmazem.get(m.armazem_id) ?? 0) + m.sacas)
     } else if (m.tipo === 'saida') {
@@ -2868,8 +3092,8 @@ function ArmazenagemVendas({
       saldo: Math.max(0, Number((saldoBasePorArmazem.get(a.id) ?? 0).toFixed(4)))
     }))
     .sort((a, b) => a.armazem.localeCompare(b.armazem))
-  const totalCargaProdutor = vProdutor ? cargas.filter((c) => c.produtor_id === vProdutor).reduce((acc, c) => acc + c.sacas, 0) : 0
-  const totalVendaProdutor = vProdutor ? vendas.filter((v) => v.produtor_id === vProdutor && v.status === 'ativa').reduce((acc, v) => acc + v.sacas, 0) : 0
+  const totalCargaProdutor = vProdutor ? cargasSafra.filter((c) => c.produtor_id === vProdutor).reduce((acc, c) => acc + c.sacas, 0) : 0
+  const totalVendaProdutor = vProdutor ? vendasSafra.filter((v) => v.produtor_id === vProdutor && v.status === 'ativa').reduce((acc, v) => acc + v.sacas, 0) : 0
   const saldoDisponivelProdutor = Number((totalCargaProdutor - totalVendaProdutor).toFixed(4))
   const sacasSolicitadas = parsePtBrNumber(vSacas)
   const valorPorSacaAtual = parsePtBrNumber(vValorSaca)
@@ -2878,10 +3102,10 @@ function ArmazenagemVendas({
     : saldoDisponivelProdutor
   const totalEstoqueComExclusoesBruto = Number(
     (
-      cargas
+      cargasSafra
         .filter((c) => !produtoresExcluidos.includes(c.produtor_id))
         .reduce((acc, c) => acc + c.sacas, 0) -
-      vendas
+      vendasSafra
         .filter((v) => v.status === 'ativa' && !produtoresExcluidos.includes(v.produtor_id))
         .reduce((acc, v) => acc + v.sacas, 0)
     ).toFixed(4)
@@ -2890,6 +3114,11 @@ function ArmazenagemVendas({
 
   async function salvarVenda() {
     try {
+      if (!activeSafraId) {
+        setVendaFeedback({ type: 'error', message: 'Selecione uma safra antes de registrar vendas.' })
+        onNotify('error', 'Selecione uma safra antes de registrar vendas.')
+        return
+      }
       const sacas = parsePtBrNumber(vSacas)
       const valorPorSaca = parsePtBrNumber(vValorSaca)
       if (!vProdutor || !vArmazem || !vData || !Number.isFinite(sacas) || sacas <= 0 || !Number.isFinite(valorPorSaca) || valorPorSaca <= 0) {
@@ -2908,7 +3137,7 @@ function ArmazenagemVendas({
         onNotify('error', 'Saldo insuficiente para esta venda.')
         return
       }
-      const similares = vendas.filter((v) => {
+      const similares = vendasSafra.filter((v) => {
         if (v.status !== 'ativa') return false
         if (v.data !== vData) return false
         if (v.produtor_id !== vProdutor) return false
@@ -2930,6 +3159,7 @@ function ArmazenagemVendas({
       const now = nowIso()
       const venda: VendaGrao = {
         id: makeId(),
+        safra_id: activeSafraId,
         data: vData,
         produtor_id: vProdutor,
         armazem_cliente_id: vArmazem,
@@ -2945,9 +3175,10 @@ function ArmazenagemVendas({
       }
       await db.venda_grao.put(venda)
       await queueOp('venda_grao', venda.id, venda)
-      await aplicarSaldoEstoque(userId, vArmazem, -sacas)
+      await aplicarSaldoEstoque(userId, activeSafraId, vArmazem, -sacas)
       await registrarMovimentoEstoque({
         userId,
+        safraId: activeSafraId,
         tipo: 'saida',
         armazemId: vArmazem,
         sacas,
@@ -2989,9 +3220,10 @@ function ArmazenagemVendas({
     }
     await db.venda_grao.put(updated)
     await queueOp('venda_grao', updated.id, updated)
-    await aplicarSaldoEstoque(userId, venda.armazem_cliente_id, venda.sacas)
+    await aplicarSaldoEstoque(userId, venda.safra_id, venda.armazem_cliente_id, venda.sacas)
     await registrarMovimentoEstoque({
       userId,
+      safraId: venda.safra_id,
       tipo: 'estorno',
       armazemId: venda.armazem_cliente_id,
       sacas: venda.sacas,
@@ -3015,14 +3247,19 @@ function ArmazenagemVendas({
       return
     }
     const delta = ajTipo === 'entrada' ? sacas : -sacas
-    const estoque = await getOrCreateEstoque(ajArmazem, userId)
+    if (!activeSafraId) {
+      onNotify('error', 'Selecione uma safra antes de ajustar estoque.')
+      return
+    }
+    const estoque = await getOrCreateEstoque(ajArmazem, activeSafraId, userId)
     if (delta < 0 && estoque.saldo_sacas < Math.abs(delta)) {
       onNotify('error', 'Saldo insuficiente para ajuste de saida.')
       return
     }
-    await aplicarSaldoEstoque(userId, ajArmazem, delta)
+    await aplicarSaldoEstoque(userId, activeSafraId, ajArmazem, delta)
     await registrarMovimentoEstoque({
       userId,
+      safraId: activeSafraId,
       tipo: ajTipo,
       armazemId: ajArmazem,
       sacas,
@@ -3043,16 +3280,16 @@ function ArmazenagemVendas({
     if (!confirmar) return
 
     const baseMap = new Map<string, number>()
-    for (const c of cargas) {
+    for (const c of cargasSafra) {
       baseMap.set(c.armazem_id, (baseMap.get(c.armazem_id) ?? 0) + c.sacas)
     }
-    for (const v of vendas) {
+    for (const v of vendasSafra) {
       if (v.status !== 'ativa') continue
       baseMap.set(v.armazem_cliente_id, (baseMap.get(v.armazem_cliente_id) ?? 0) - v.sacas)
     }
-    for (const m of movimentos) {
+    for (const m of movimentosSafra) {
       if (isMovimentoAutomaticoDeCarga(m)) continue
-      if (!isAjusteManualValido(m)) continue
+      if (!isAjusteManualValido(m) && !isSaldoInicialSafra(m)) continue
       if (m.tipo === 'entrada' || m.tipo === 'estorno') {
         baseMap.set(m.armazem_id, (baseMap.get(m.armazem_id) ?? 0) + m.sacas)
       } else if (m.tipo === 'saida') {
@@ -3063,7 +3300,7 @@ function ArmazenagemVendas({
     const now = nowIso()
     for (const armazem of armazens) {
       const saldo = Math.max(0, Number((baseMap.get(armazem.id) ?? 0).toFixed(4)))
-      const atual = await db.estoque_armazem.where('armazem_id').equals(armazem.id).first()
+      const atual = await db.estoque_armazem.where('[safra_id+armazem_id]').equals([activeSafraId, armazem.id]).first()
       if (atual) {
         const updated: EstoqueArmazem = {
           ...atual,
@@ -3077,6 +3314,7 @@ function ArmazenagemVendas({
       } else {
         const novo: EstoqueArmazem = {
           id: makeId(),
+          safra_id: activeSafraId,
           armazem_id: armazem.id,
           saldo_sacas: saldo,
           created_at: now,
@@ -3096,10 +3334,10 @@ function ArmazenagemVendas({
     onNotify('success', 'Saldos recalculados com sucesso.')
   }
 
-  const vendasFiltradas = vendas
+  const vendasFiltradas = vendasSafra
     .filter((v) => v.data >= filtroInicio && v.data <= filtroFim)
     .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
-  const movimentosFiltrados = movimentos.filter((m) => {
+  const movimentosFiltrados = movimentosSafra.filter((m) => {
     const d = localYmdFromValue(m.created_at)
     return d >= filtroInicio && d <= filtroFim
   }).sort((a, b) => b.created_at.localeCompare(a.created_at))
@@ -3217,6 +3455,7 @@ function ArmazenagemVendas({
   return (
     <section className="panel">
       <h2>Armazenagem e Vendas</h2>
+      <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="kpis">
         <article><span>Total vendido (sacas)</span><strong>{formatPtBrNumber(resumoVendas.totalSacas)}</strong></article>
         <article><span>Total de vendas (R$)</span><strong>{formatPtBrNumber(resumoVendas.totalValor)}</strong></article>
@@ -3318,11 +3557,15 @@ function Frete({
   refreshTick,
   ownerEmail,
   userId,
+  activeSafraId,
+  setActiveSafraId,
   onNotify
 }: {
   refreshTick: number
   ownerEmail: string
   userId: string
+  activeSafraId: string
+  setActiveSafraId: (safraId: string) => void
   onNotify: (type: NoticeType, message: string) => void
 }) {
   const [cargas, setCargas] = useState<Carga[]>([])
@@ -3332,7 +3575,7 @@ function Frete({
   const [safras, setSafras] = useState<Safra[]>([])
   const [lancamentos, setLancamentos] = useState<FreteLancamento[]>([])
   const [tarifasFrete, setTarifasFrete] = useState<TarifaFreteRota[]>([])
-  const [safraId, setSafraId] = useState('')
+  const [safraId, setSafraId] = useState(activeSafraId)
   const [caminhaoId, setCaminhaoId] = useState('')
   const [dataInicio, setDataInicio] = useState('')
   const [dataFim, setDataFim] = useState('')
@@ -3346,6 +3589,8 @@ function Frete({
   const [safraAno, setSafraAno] = useState(String(new Date().getFullYear()))
   const [safraInicio, setSafraInicio] = useState('')
   const [safraFim, setSafraFim] = useState('')
+  const [safraAtivaNova, setSafraAtivaNova] = useState(true)
+  const [saldoInicialPorArmazem, setSaldoInicialPorArmazem] = useState<Record<string, string>>({})
   const [dieselData, setDieselData] = useState(localDateYmd())
   const [dieselLitros, setDieselLitros] = useState('')
   const [dieselPreco, setDieselPreco] = useState('')
@@ -3360,6 +3605,7 @@ function Frete({
   const [reciboValor, setReciboValor] = useState('')
   const [reciboDocumentoTipo, setReciboDocumentoTipo] = useState<'CPF' | 'RG'>('CPF')
   const [reciboDocumentoNumero, setReciboDocumentoNumero] = useState('')
+  const ultimoActiveSafraIdRef = useRef(activeSafraId)
 
   const carregar = useCallback(async () => {
     const [cs, cms, props, arms, sfs, lancs, tarifas] = await Promise.all([
@@ -3375,20 +3621,35 @@ function Frete({
     setCaminhoes(cms)
     setPropriedades(props)
     setArmazens(arms)
-    setSafras(sfs.filter((s) => s.created_by === userId).sort((a, b) => b.data_inicio.localeCompare(a.data_inicio)))
+    const safraRows = sfs.filter((s) => s.created_by === userId).map(normalizarSafra).sort((a, b) => b.data_inicio.localeCompare(a.data_inicio))
+    setSafras(safraRows)
+    const nextSafraId = activeSafraId && safraRows.some((item) => item.id === activeSafraId)
+      ? activeSafraId
+      : (safraId && safraRows.some((item) => item.id === safraId) ? safraId : (safraRows[0]?.id ?? ''))
+    setSafraId(nextSafraId)
+    if (ultimoActiveSafraIdRef.current !== activeSafraId || !dataInicio || !dataFim) {
+      const safraSelecionadaAtual = safraRows.find((item) => item.id === nextSafraId)
+      if (safraSelecionadaAtual) {
+        setDataInicio(safraSelecionadaAtual.data_inicio)
+        setDataFim(safraSelecionadaAtual.data_fim)
+      }
+      ultimoActiveSafraIdRef.current = activeSafraId
+    }
     setLancamentos(lancs.filter((l) => l.created_by === userId))
     setTarifasFrete(tarifas.filter((t) => t.created_by === userId))
-  }, [userId])
+  }, [activeSafraId, dataFim, dataInicio, safraId, userId])
 
   useEffect(() => {
     void Promise.resolve().then(() => carregar())
   }, [carregar, refreshTick])
 
-  const safraSelecionada = safras.find((s) => s.id === safraId)
-  const tarifaSelecionada = tarifasFrete.find((t) => t.propriedade_id === tarifaPropriedadeId && t.armazem_id === tarifaArmazemId)
+  const safraIdAtual = activeSafraId || safraId
+  const safraSelecionada = safras.find((s) => s.id === safraIdAtual)
+  const tarifaSelecionada = tarifasFrete.find((t) => t.safra_id === safraIdAtual && t.propriedade_id === tarifaPropriedadeId && t.armazem_id === tarifaArmazemId)
 
   function selecionarSafra(id: string) {
     setSafraId(id)
+    setActiveSafraId(id)
     const safra = safras.find((s) => s.id === id)
     if (!safra) return
     setDataInicio(safra.data_inicio)
@@ -3397,7 +3658,7 @@ function Frete({
   }
 
   function preencherTarifaDaRota(propriedadeIdAtual: string, armazemIdAtual: string) {
-    const tarifa = tarifasFrete.find((item) => item.propriedade_id === propriedadeIdAtual && item.armazem_id === armazemIdAtual)
+    const tarifa = tarifasFrete.find((item) => item.safra_id === safraIdAtual && item.propriedade_id === propriedadeIdAtual && item.armazem_id === armazemIdAtual)
     setTarifaValorPorSaca(tarifa ? String(tarifa.valor_por_saca) : '')
     setTarifaObservacao(tarifa?.observacao ?? '')
   }
@@ -3452,6 +3713,7 @@ function Frete({
   const nomePropriedade = new Map(propriedades.map((item) => [item.id, item.nome]))
   const nomeArmazem = new Map(armazens.map((item) => [item.id, item.nome]))
   const filtradas = cargas.filter((c) => {
+    if (safraIdAtual && c.safra_id !== safraIdAtual) return false
     if (caminhaoId && c.placa !== caminhaoId) return false
     if (dataInicio && c.data < dataInicio) return false
     if (dataFim && c.data > dataFim) return false
@@ -3464,7 +3726,7 @@ function Frete({
   const totalFreteBruto = filtradas.reduce((acc, c) => acc + c.frete_valor_total, 0)
   const tarifaValorNum = parsePtBrNumber(tarifaValorPorSaca)
   const lancamentosFiltrados = lancamentos
-    .filter((l) => (!safraId || l.safra_id === safraId) && (!caminhaoId || l.caminhao_id === caminhaoId))
+    .filter((l) => (!safraIdAtual || l.safra_id === safraIdAtual) && (!caminhaoId || l.caminhao_id === caminhaoId))
     .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
   const abastecidas = lancamentosFiltrados.filter((l) => l.tipo === 'diesel')
   const vales = lancamentosFiltrados.filter((l) => l.tipo === 'vale')
@@ -3476,6 +3738,7 @@ function Frete({
   })
   const dieselValorAtual = calcularValorDiesel(parsePtBrNumber(dieselLitros), parsePtBrNumber(dieselPreco))
   const cargasDaRota = cargas.filter((c) => {
+    if (safraIdAtual && c.safra_id !== safraIdAtual) return false
     if (!tarifaPropriedadeId || c.propriedade_id !== tarifaPropriedadeId) return false
     if (!tarifaArmazemId || c.armazem_id !== tarifaArmazemId) return false
     if (dataInicio && c.data < dataInicio) return false
@@ -3496,11 +3759,16 @@ function Frete({
       return
     }
     const now = nowIso()
+    const ativa = safraAtivaNova || safras.length === 0
+    if (ativa) {
+      await definirSafraAtiva(userId, '')
+    }
     const row: Safra = {
       id: makeId(),
       nome: safraNome.trim(),
       cultura: safraCultura.trim().toLowerCase(),
       ano: safraAno.trim(),
+      ativa,
       data_inicio: safraInicio,
       data_fim: safraFim,
       created_at: now,
@@ -3511,22 +3779,59 @@ function Frete({
     }
     await db.safras.put(row)
     await queueOp('safras', row.id, row)
+    if (ativa) {
+      await definirSafraAtiva(userId, row.id)
+      setActiveSafraId(row.id)
+    }
+    for (const armazem of armazens) {
+      const saldo = parsePtBrNumber(saldoInicialPorArmazem[armazem.id] ?? '')
+      if (!Number.isFinite(saldo) || saldo <= 0) continue
+      const estoque: EstoqueArmazem = {
+        id: makeId(),
+        safra_id: row.id,
+        armazem_id: armazem.id,
+        saldo_sacas: saldo,
+        created_at: now,
+        updated_at: now,
+        created_by: userId,
+        updated_by: userId,
+        sync_status: 'pending_sync'
+      }
+      await db.estoque_armazem.put(estoque)
+      await queueOp('estoque_armazem', estoque.id, estoque)
+      await registrarMovimentoEstoque({
+        userId,
+        safraId: row.id,
+        tipo: 'entrada',
+        armazemId: armazem.id,
+        sacas: saldo,
+        origem: 'manual',
+        referenciaId: estoque.id,
+        motivo: 'Saldo inicial da safra'
+      })
+    }
     try {
       await runSync()
     } catch {
       onNotify('success', 'Safra salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
     }
-    setSafraId(row.id)
+    if (ativa || !activeSafraId) setSafraId(row.id)
     setSafraNome('')
     setSafraCultura('')
     setSafraAno(String(new Date().getFullYear()))
     setSafraInicio('')
     setSafraFim('')
+    setSafraAtivaNova(true)
+    setSaldoInicialPorArmazem({})
     await carregar()
     onNotify('success', 'Safra salva com sucesso.')
   }
 
   async function salvarTarifaRota() {
+    if (!safraIdAtual) {
+      onNotify('error', 'Selecione uma safra antes de salvar tarifas.')
+      return
+    }
     if (!tarifaPropriedadeId || tarifaArmazemIds.length === 0) {
       onNotify('error', 'Selecione a propriedade e pelo menos um armazem para salvar a tarifa.')
       return
@@ -3540,7 +3845,7 @@ function Frete({
     let atualizadas = 0
     let criadas = 0
     for (const armazemId of tarifaArmazemIds) {
-      const existente = tarifasFrete.find((item) => item.propriedade_id === tarifaPropriedadeId && item.armazem_id === armazemId)
+      const existente = tarifasFrete.find((item) => item.safra_id === safraIdAtual && item.propriedade_id === tarifaPropriedadeId && item.armazem_id === armazemId)
       const row: TarifaFreteRota = existente
         ? {
             ...existente,
@@ -3552,6 +3857,7 @@ function Frete({
           }
         : {
             id: makeId(),
+            safra_id: safraIdAtual,
             propriedade_id: tarifaPropriedadeId,
             armazem_id: armazemId,
             valor_por_saca: Number(valorPorSaca.toFixed(4)),
@@ -3577,7 +3883,7 @@ function Frete({
   }
 
   async function reprocessarCargasDaRota() {
-    if (!tarifaPropriedadeId || !tarifaArmazemId) {
+    if (!safraIdAtual || !tarifaPropriedadeId || !tarifaArmazemId) {
       onNotify('error', 'Selecione a rota para reprocessar as cargas.')
       return
     }
@@ -3645,7 +3951,7 @@ function Frete({
     const now = nowIso()
     const row: FreteLancamento = {
       id: makeId(),
-      safra_id: safraId,
+      safra_id: safraIdAtual,
       caminhao_id: caminhaoId,
       tipo: 'diesel',
       data: dieselData,
@@ -3687,7 +3993,7 @@ function Frete({
     const now = nowIso()
     const row: FreteLancamento = {
       id: makeId(),
-      safra_id: safraId,
+      safra_id: safraIdAtual,
       caminhao_id: caminhaoId,
       tipo: 'vale',
       data: valeData,
@@ -3933,6 +4239,7 @@ function Frete({
   return (
     <section className="panel">
       <h2>Frete por Safra e Caminhao</h2>
+      <p className="muted">Safra em exibicao: {safraSelecionada ? `${safraSelecionada.nome} | ${safraSelecionada.cultura} ${safraSelecionada.ano}` : 'nenhuma safra selecionada'}</p>
       <h3>Cadastro de Safra</h3>
       <div className="grid">
         <input placeholder="Nome da safra (ex: Safra Soja 2026)" value={safraNome} onChange={(e) => setSafraNome(e.target.value)} />
@@ -3940,6 +4247,20 @@ function Frete({
         <input placeholder="Ano da safra" value={safraAno} onChange={(e) => setSafraAno(e.target.value)} />
         <input type="date" value={safraInicio} onChange={(e) => setSafraInicio(e.target.value)} />
         <input type="date" value={safraFim} onChange={(e) => setSafraFim(e.target.value)} />
+      </div>
+      <label>
+        <input type="checkbox" checked={safraAtivaNova} onChange={(e) => setSafraAtivaNova(e.target.checked)} /> Definir esta safra como ativa ao salvar
+      </label>
+      <p className="muted">Saldo inicial opcional por armazem para comecar a nova safra sem misturar estoque antigo.</p>
+      <div className="grid">
+        {armazens.map((armazem) => (
+          <input
+            key={armazem.id}
+            placeholder={`Saldo inicial - ${armazem.nome}`}
+            value={saldoInicialPorArmazem[armazem.id] ?? ''}
+            onChange={(e) => setSaldoInicialPorArmazem((prev) => ({ ...prev, [armazem.id]: e.target.value }))}
+          />
+        ))}
       </div>
       <div className="actions">
         <button onClick={() => void salvarSafra()}>Salvar safra</button>
@@ -3986,7 +4307,7 @@ function Frete({
 
       <h3>Fechamento</h3>
       <div className="grid frete-filtros">
-        <SelectFromList label="Safra" value={safraId} onChange={selecionarSafra} items={safras} />
+        <SelectFromList label="Safra" value={safraIdAtual} onChange={selecionarSafra} items={safras} />
         <SelectFromList label="Caminhao" value={caminhaoId} onChange={setCaminhaoId} items={caminhoes} />
         <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
         <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
@@ -4088,7 +4409,7 @@ function Frete({
   )
 }
 
-function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string; refreshTick: number; onSaved: () => void; onNotify: (type: NoticeType, message: string) => void }) {
+function Historico({ userId, refreshTick, activeSafraId, activeSafra, onSaved, onNotify }: { userId: string; refreshTick: number; activeSafraId: string; activeSafra?: Safra; onSaved: () => void; onNotify: (type: NoticeType, message: string) => void }) {
   const [filters, setFilters] = useState<Filters>(initialFilters)
   const [cargas, setCargas] = useState<Carga[]>([])
   const [refs, setRefs] = useState<{[k: string]: BaseEntity[] | Talhao[]}>({})
@@ -4125,6 +4446,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
   const nomeCaminhao = new Map(((refs.caminhoes as BaseEntity[]) ?? []).map((i) => [i.id, i.nome]))
 
   const filtered = cargas.filter((c) => {
+    if (activeSafraId && c.safra_id !== activeSafraId) return false
     if (filters.dataInicio && c.data < filters.dataInicio) return false
     if (filters.dataFim && c.data > filters.dataFim) return false
     if (filters.produtorId && c.produtor_id !== filters.produtorId) return false
@@ -4182,7 +4504,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     const armazemAntigo = original.armazem_id
     const liquidoAtualizado = parsePtBrNumber(editLiquido)
     const sacasAtualizadas = toSacas(liquidoAtualizado)
-    const tarifaRota = await db.tarifas_frete_rota.where('[propriedade_id+armazem_id]').equals([editPropriedadeId, editArmazemId]).first()
+    const tarifaRota = await db.tarifas_frete_rota.where('[safra_id+propriedade_id+armazem_id]').equals([original.safra_id, editPropriedadeId, editArmazemId]).first()
     const freteValorPorSaca = tarifaRota?.valor_por_saca ?? original.frete_valor_por_saca ?? 0
     const updated: Carga = {
       ...original,
@@ -4207,10 +4529,11 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     if (armazemAntigo === updated.armazem_id) {
       const delta = updated.sacas - sacasAntigas
       if (delta !== 0) {
-        await aplicarSaldoEstoque(userId, updated.armazem_id, delta)
-        await registrarMovimentoEstoque({
-          userId,
-          tipo: delta > 0 ? 'entrada' : 'saida',
+      await aplicarSaldoEstoque(userId, updated.safra_id, updated.armazem_id, delta)
+      await registrarMovimentoEstoque({
+        userId,
+        safraId: updated.safra_id,
+        tipo: delta > 0 ? 'entrada' : 'saida',
           armazemId: updated.armazem_id,
           sacas: Math.abs(delta),
           origem: 'carga',
@@ -4219,10 +4542,11 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
         })
       }
     } else {
-      await aplicarSaldoEstoque(userId, armazemAntigo, -sacasAntigas)
-      await aplicarSaldoEstoque(userId, updated.armazem_id, updated.sacas)
+      await aplicarSaldoEstoque(userId, updated.safra_id, armazemAntigo, -sacasAntigas)
+      await aplicarSaldoEstoque(userId, updated.safra_id, updated.armazem_id, updated.sacas)
       await registrarMovimentoEstoque({
         userId,
+        safraId: updated.safra_id,
         tipo: 'saida',
         armazemId: armazemAntigo,
         sacas: sacasAntigas,
@@ -4232,6 +4556,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       })
       await registrarMovimentoEstoque({
         userId,
+        safraId: updated.safra_id,
         tipo: 'entrada',
         armazemId: updated.armazem_id,
         sacas: updated.sacas,
@@ -4255,9 +4580,10 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     await db.pending_ops.where('record_id').equals(cargaId).delete()
     await queueDeleteOp('cargas', cargaId)
     if (existing) {
-      await aplicarSaldoEstoque(userId, existing.armazem_id, -existing.sacas)
+      await aplicarSaldoEstoque(userId, existing.safra_id, existing.armazem_id, -existing.sacas)
       await registrarMovimentoEstoque({
         userId,
+        safraId: existing.safra_id,
         tipo: 'saida',
         armazemId: existing.armazem_id,
         sacas: existing.sacas,
@@ -4277,6 +4603,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
   return (
     <section className="panel">
       <h2>Historico e Filtros</h2>
+      <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="grid">
         <input type="date" value={filters.dataInicio ?? ''} onChange={(e) => setFilters((f) => ({ ...f, dataInicio: e.target.value }))} />
         <input type="date" value={filters.dataFim ?? ''} onChange={(e) => setFilters((f) => ({ ...f, dataFim: e.target.value }))} />
@@ -4394,6 +4721,7 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     nome: nomeSafraTeste,
     cultura: 'soja',
     ano: '2026',
+    ativa: true,
     data_inicio: '2026-05-20',
     data_fim: '2026-06-20',
     created_at: now,
@@ -4408,6 +4736,7 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   const tarifas: TarifaFreteRota[] = [
     {
       id: makeId(),
+      safra_id: safra.id,
       propriedade_id: propriedade.id,
       armazem_id: armazemSede.id,
       valor_por_saca: 2,
@@ -4420,6 +4749,7 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     },
     {
       id: makeId(),
+      safra_id: safra.id,
       propriedade_id: propriedade.id,
       armazem_id: armazemCoop.id,
       valor_por_saca: 2.35,
@@ -4451,6 +4781,7 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   for (const [data, placa, talhaoId, produtorId, variedadeId, armazemId, bruto, liquido] of cargasTeste) {
     const carga: Carga = {
       id: makeId(),
+      safra_id: safra.id,
       data,
       placa,
       propriedade_id: propriedade.id,
@@ -4471,9 +4802,10 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
     }
     await db.cargas.put(carga)
     await queueOp('cargas', carga.id, carga)
-    await aplicarSaldoEstoque(userId, carga.armazem_id, carga.sacas)
+    await aplicarSaldoEstoque(userId, carga.safra_id, carga.armazem_id, carga.sacas)
     await registrarMovimentoEstoque({
       userId,
+      safraId: carga.safra_id,
       tipo: 'entrada',
       armazemId: carga.armazem_id,
       sacas: carga.sacas,
@@ -4506,8 +4838,9 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   }
 
   const venda: VendaGrao = {
-    id: makeId(),
-    data: '2026-06-05',
+      id: makeId(),
+      safra_id: safra.id,
+      data: '2026-06-05',
     produtor_id: produtorPaulo.id,
     armazem_cliente_id: armazemSede.id,
     sacas: 300,
@@ -4522,9 +4855,10 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   }
   await db.venda_grao.put(venda)
   await queueOp('venda_grao', venda.id, venda)
-  await aplicarSaldoEstoque(userId, venda.armazem_cliente_id, -venda.sacas)
+  await aplicarSaldoEstoque(userId, venda.safra_id, venda.armazem_cliente_id, -venda.sacas)
   await registrarMovimentoEstoque({
     userId,
+    safraId: venda.safra_id,
     tipo: 'saida',
     armazemId: venda.armazem_cliente_id,
     sacas: venda.sacas,

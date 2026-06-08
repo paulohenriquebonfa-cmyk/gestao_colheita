@@ -141,9 +141,29 @@ class ColheitaDb extends Dexie {
       pilot_participantes: 'id,email,status,data_entrada,updated_at,sync_status',
       feedback_items: 'id,categoria,prioridade,status,created_by,updated_at,sync_status',
       area_variedade_talhao: 'id,talhao_id,variedade_id,created_by,updated_at,sync_status',
-      safras: 'id,nome,cultura,ano,data_inicio,data_fim,created_by,updated_at,sync_status',
+      safras: 'id,nome,cultura,ano,ativa,data_inicio,data_fim,created_by,updated_at,sync_status',
       frete_lancamentos: 'id,safra_id,caminhao_id,tipo,data,created_by,updated_at,sync_status',
       tarifas_frete_rota: 'id,propriedade_id,armazem_id,valor_por_saca,created_by,updated_at,sync_status,[propriedade_id+armazem_id]'
+    })
+    this.version(9).stores({
+      propriedades: 'id,nome,updated_at,sync_status',
+      produtores: 'id,nome,updated_at,sync_status',
+      variedades: 'id,nome,updated_at,sync_status',
+      armazens: 'id,nome,updated_at,sync_status',
+      caminhoes: 'id,nome,updated_at,sync_status',
+      talhoes: 'id,nome,area_ha,updated_at,sync_status',
+      cargas: 'id,safra_id,data,placa,propriedade_id,talhao_id,produtor_id,variedade_id,armazem_id,frete_valor_por_saca,frete_valor_total,updated_at,sync_status',
+      estoque_armazem: 'id,safra_id,armazem_id,updated_at,sync_status,[safra_id+armazem_id]',
+      movimento_estoque: 'id,safra_id,tipo,armazem_id,origem,referencia_id,updated_at,sync_status',
+      venda_grao: 'id,safra_id,data,produtor_id,armazem_cliente_id,status,updated_at,sync_status',
+      pending_ops: 'id,table,record_id,updated_at,retries',
+      audit_logs: 'id,action,actor_user_id,created_at',
+      pilot_participantes: 'id,email,status,data_entrada,updated_at,sync_status',
+      feedback_items: 'id,categoria,prioridade,status,created_by,updated_at,sync_status',
+      area_variedade_talhao: 'id,talhao_id,variedade_id,created_by,updated_at,sync_status',
+      safras: 'id,nome,cultura,ano,ativa,data_inicio,data_fim,created_by,updated_at,sync_status',
+      frete_lancamentos: 'id,safra_id,caminhao_id,tipo,data,created_by,updated_at,sync_status',
+      tarifas_frete_rota: 'id,safra_id,propriedade_id,armazem_id,valor_por_saca,created_by,updated_at,sync_status,[safra_id+propriedade_id+armazem_id]'
     })
   }
 }

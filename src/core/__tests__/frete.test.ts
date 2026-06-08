@@ -24,6 +24,7 @@ function lancamento(patch: Partial<FreteLancamento>): FreteLancamento {
 function carga(patch: Partial<Carga>): Carga {
   return {
     id: patch.id ?? crypto.randomUUID(),
+    safra_id: patch.safra_id ?? 'safra-1',
     data: patch.data ?? '2026-06-01',
     placa: patch.placa ?? 'caminhao-1',
     propriedade_id: patch.propriedade_id ?? 'prop-1',

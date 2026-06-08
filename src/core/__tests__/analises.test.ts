@@ -25,6 +25,7 @@ describe('analises - produtividade por variedade no talhao', () => {
     const cargas: Carga[] = [
       {
         id: '1',
+        safra_id: 'S1',
         data: '2026-05-30',
         placa: 'CAM1',
         propriedade_id: 'P1',
@@ -45,6 +46,7 @@ describe('analises - produtividade por variedade no talhao', () => {
       },
       {
         id: '2',
+        safra_id: 'S1',
         data: '2026-05-30',
         placa: 'CAM1',
         propriedade_id: 'P1',
@@ -82,6 +84,7 @@ describe('analises - produtividade por variedade no talhao', () => {
     const cargas: Carga[] = [
       {
         id: '1',
+        safra_id: 'S1',
         data: '2026-05-30',
         placa: 'CAM1',
         propriedade_id: 'P1',

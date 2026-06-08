@@ -63,6 +63,7 @@ create table if not exists talhoes (
 
 create table if not exists cargas (
   id uuid primary key,
+  safra_id uuid,
   data date not null,
   placa text not null,
   propriedade_id uuid not null references propriedades(id),
@@ -86,6 +87,7 @@ alter table cargas add column if not exists frete_valor_total numeric not null d
 
 create table if not exists estoque_armazem (
   id uuid primary key,
+  safra_id uuid,
   armazem_id uuid not null references armazens(id),
   saldo_sacas numeric not null,
   created_at timestamptz not null,
@@ -97,6 +99,7 @@ create table if not exists estoque_armazem (
 
 create table if not exists movimento_estoque (
   id uuid primary key,
+  safra_id uuid,
   tipo text not null,
   armazem_id uuid not null references armazens(id),
   sacas numeric not null,
@@ -112,6 +115,7 @@ create table if not exists movimento_estoque (
 
 create table if not exists venda_grao (
   id uuid primary key,
+  safra_id uuid,
   data date not null,
   produtor_id uuid not null references produtores(id),
   armazem_cliente_id uuid not null references armazens(id),
@@ -174,6 +178,7 @@ create table if not exists safras (
   nome text not null,
   cultura text not null,
   ano text not null,
+  ativa boolean not null default false,
   data_inicio date not null,
   data_fim date not null,
   created_at timestamptz not null,
@@ -182,6 +187,7 @@ create table if not exists safras (
   updated_by text not null,
   sync_status text not null
 );
+alter table safras add column if not exists ativa boolean not null default false;
 
 create table if not exists frete_lancamentos (
   id uuid primary key,
@@ -202,6 +208,7 @@ create table if not exists frete_lancamentos (
 
 create table if not exists tarifas_frete_rota (
   id uuid primary key,
+  safra_id uuid,
   propriedade_id uuid not null references propriedades(id),
   armazem_id uuid not null references armazens(id),
   valor_por_saca numeric not null check (valor_por_saca >= 0),
@@ -212,6 +219,11 @@ create table if not exists tarifas_frete_rota (
   updated_by text not null,
   sync_status text not null
 );
+alter table cargas add column if not exists safra_id uuid references safras(id);
+alter table estoque_armazem add column if not exists safra_id uuid references safras(id);
+alter table movimento_estoque add column if not exists safra_id uuid references safras(id);
+alter table venda_grao add column if not exists safra_id uuid references safras(id);
+alter table tarifas_frete_rota add column if not exists safra_id uuid references safras(id);
 
 alter table propriedades enable row level security;
 alter table produtores enable row level security;

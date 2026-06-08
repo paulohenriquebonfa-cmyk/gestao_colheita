@@ -16,6 +16,7 @@ export interface Talhao extends BaseEntity {
 
 export interface Carga {
   id: string
+  safra_id: string
   data: string
   placa: string
   propriedade_id: string
@@ -37,6 +38,7 @@ export interface Carga {
 
 export interface TarifaFreteRota {
   id: string
+  safra_id: string
   propriedade_id: string
   armazem_id: string
   valor_por_saca: number
@@ -50,6 +52,7 @@ export interface TarifaFreteRota {
 
 export interface EstoqueArmazem {
   id: string
+  safra_id: string
   armazem_id: string
   saldo_sacas: number
   sync_status: SyncStatus
@@ -64,6 +67,7 @@ export type OrigemMovimentoEstoque = 'carga' | 'venda' | 'manual' | 'cancelament
 
 export interface MovimentoEstoque {
   id: string
+  safra_id: string
   tipo: TipoMovimentoEstoque
   armazem_id: string
   sacas: number
@@ -81,6 +85,7 @@ export type StatusVendaGrao = 'ativa' | 'cancelada'
 
 export interface VendaGrao {
   id: string
+  safra_id: string
   data: string
   produtor_id: string
   armazem_cliente_id: string
@@ -102,6 +107,7 @@ export interface Safra {
   ano: string
   data_inicio: string
   data_fim: string
+  ativa: boolean
   sync_status: SyncStatus
   created_at: string
   updated_at: string
@@ -192,6 +198,7 @@ export interface AreaVariedadeTalhao {
 }
 
 export interface Filters {
+  safraId?: string
   dataInicio?: string
   dataFim?: string
   produtorId?: string
