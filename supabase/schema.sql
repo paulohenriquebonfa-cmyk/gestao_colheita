@@ -73,12 +73,16 @@ create table if not exists cargas (
   peso_bruto_kg numeric not null,
   peso_liquido_kg numeric not null,
   sacas numeric not null,
+  frete_valor_por_saca numeric not null default 0,
+  frete_valor_total numeric not null default 0,
   created_at timestamptz not null,
   updated_at timestamptz not null,
   created_by text not null,
   updated_by text not null,
   sync_status text not null
 );
+alter table cargas add column if not exists frete_valor_por_saca numeric not null default 0;
+alter table cargas add column if not exists frete_valor_total numeric not null default 0;
 
 create table if not exists estoque_armazem (
   id uuid primary key,
@@ -196,6 +200,19 @@ create table if not exists frete_lancamentos (
   sync_status text not null
 );
 
+create table if not exists tarifas_frete_rota (
+  id uuid primary key,
+  propriedade_id uuid not null references propriedades(id),
+  armazem_id uuid not null references armazens(id),
+  valor_por_saca numeric not null check (valor_por_saca >= 0),
+  observacao text,
+  created_at timestamptz not null,
+  updated_at timestamptz not null,
+  created_by text not null,
+  updated_by text not null,
+  sync_status text not null
+);
+
 alter table propriedades enable row level security;
 alter table produtores enable row level security;
 alter table variedades enable row level security;
@@ -211,6 +228,7 @@ alter table feedback_items enable row level security;
 alter table area_variedade_talhao enable row level security;
 alter table safras enable row level security;
 alter table frete_lancamentos enable row level security;
+alter table tarifas_frete_rota enable row level security;
 
 drop policy if exists "farm_read_propriedades" on propriedades;
 drop policy if exists "farm_write_propriedades" on propriedades;
@@ -245,6 +263,8 @@ drop policy if exists "farm_read_safras" on safras;
 drop policy if exists "farm_write_safras" on safras;
 drop policy if exists "farm_read_frete_lancamentos" on frete_lancamentos;
 drop policy if exists "farm_write_frete_lancamentos" on frete_lancamentos;
+drop policy if exists "farm_read_tarifas_frete_rota" on tarifas_frete_rota;
+drop policy if exists "farm_write_tarifas_frete_rota" on tarifas_frete_rota;
 
 create policy "farm_read_propriedades" on propriedades for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_propriedades" on propriedades for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
@@ -278,6 +298,9 @@ create policy "farm_read_safras" on safras for select to authenticated using (cr
 create policy "farm_write_safras" on safras for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
 create policy "farm_read_frete_lancamentos" on frete_lancamentos for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_frete_lancamentos" on frete_lancamentos for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+create policy "farm_read_tarifas_frete_rota" on tarifas_frete_rota for select to authenticated using (created_by = auth.uid()::text);
+create policy "farm_write_tarifas_frete_rota" on tarifas_frete_rota for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
 
 grant select, insert, update, delete on table safras to authenticated;
 grant select, insert, update, delete on table frete_lancamentos to authenticated;
+grant select, insert, update, delete on table tarifas_frete_rota to authenticated;

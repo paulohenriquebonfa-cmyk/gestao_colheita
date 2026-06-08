@@ -5,11 +5,11 @@ import { hasSupabase, supabase } from './core/supabase'
 import { installSyncListeners, runSync } from './core/sync'
 import { produtividadeSacasPorHa, toSacas } from './core/metrics'
 import { dividirPesoBrutoProporcional, produtividadeVariedadeNoTalhao as calcProdutividadeVariedadeNoTalhao, totalSacasDivididas } from './core/analises'
-import { calcularFechamentoFrete, calcularValorDiesel } from './core/frete'
+import { calcularFechamentoFrete, calcularFreteCarga, calcularValorDiesel, resumirReprocessamentoFrete } from './core/frete'
 import { validarCarga } from './core/validation'
 import { formatCpf, formatDateBr, formatDateTimeBr, formatDateTimeBrWithZone, formatPtBrNumber, localDateYmd, localYmdFromValue, makeId, nowIso, parsePtBrNumber } from './core/utils'
 import { valorReaisPorExtenso } from './core/valorExtenso'
-import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, UserRole, VendaGrao } from './core/types'
+import type { AreaVariedadeTalhao, AuditLog, BaseEntity, Carga, EstoqueArmazem, FeedbackItem, Filters, FreteLancamento, MovimentoEstoque, PilotParticipant, Safra, Talhao, TarifaFreteRota, UserRole, VendaGrao } from './core/types'
 
 type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'frete' | 'vendas' | 'feedback' | 'config' | 'operacao'
 
@@ -22,6 +22,18 @@ const initialFilters: Filters = {}
 
 function isUuidLike(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function rotaFreteKey(propriedadeId: string, armazemId: string) {
+  return `${propriedadeId}::${armazemId}`
+}
+
+function normalizarCargaFrete(carga: Carga): Carga {
+  return {
+    ...carga,
+    frete_valor_por_saca: Number.isFinite(carga.frete_valor_por_saca) ? carga.frete_valor_por_saca : 0,
+    frete_valor_total: Number.isFinite(carga.frete_valor_total) ? carga.frete_valor_total : 0
+  }
 }
 
 function placaLegivel(rawPlaca: string, nomeCaminhao?: string) {
@@ -480,7 +492,7 @@ function AssistenteConfiguracao({
   }
 
   async function exportarBackup() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -492,13 +504,14 @@ function AssistenteConfiguracao({
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray(),
       db.safras.toArray(),
-      db.frete_lancamentos.toArray()
+      db.frete_lancamentos.toArray(),
+      db.tarifas_frete_rota.toArray()
     ])
 
     const payload = {
       exportado_em: nowIso(),
       versao: 1,
-      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos }
+      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota }
     }
     const stamp = localDateYmd()
     baixarJson(`backup-colheita-${stamp}.json`, payload)
@@ -507,7 +520,7 @@ function AssistenteConfiguracao({
   }
 
   async function salvarSnapshotSemanal() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -519,11 +532,12 @@ function AssistenteConfiguracao({
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray(),
       db.safras.toArray(),
-      db.frete_lancamentos.toArray()
+      db.frete_lancamentos.toArray(),
+      db.tarifas_frete_rota.toArray()
     ])
     const payload = {
       snapshot_em: nowIso(),
-      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos }
+      dados: { propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota }
     }
     localStorage.setItem(`weekly_backup_${user.id}`, JSON.stringify(payload))
     localStorage.setItem(`weekly_backup_at_${user.id}`, nowIso())
@@ -553,6 +567,7 @@ function AssistenteConfiguracao({
           venda_grao: VendaGrao[]
           safras?: Safra[]
           frete_lancamentos?: FreteLancamento[]
+          tarifas_frete_rota?: TarifaFreteRota[]
         }
       }
       await db.propriedades.bulkPut(payload.dados.propriedades ?? [])
@@ -561,12 +576,13 @@ function AssistenteConfiguracao({
       await db.armazens.bulkPut(payload.dados.armazens ?? [])
       await db.caminhoes.bulkPut(payload.dados.caminhoes ?? [])
       await db.talhoes.bulkPut(payload.dados.talhoes ?? [])
-      await db.cargas.bulkPut(payload.dados.cargas ?? [])
+      await db.cargas.bulkPut((payload.dados.cargas ?? []).map(normalizarCargaFrete))
       await db.estoque_armazem.bulkPut(payload.dados.estoque_armazem ?? [])
       await db.movimento_estoque.bulkPut(payload.dados.movimento_estoque ?? [])
       await db.venda_grao.bulkPut(payload.dados.venda_grao ?? [])
       await db.safras.bulkPut(payload.dados.safras ?? [])
       await db.frete_lancamentos.bulkPut(payload.dados.frete_lancamentos ?? [])
+      await db.tarifas_frete_rota.bulkPut(payload.dados.tarifas_frete_rota ?? [])
       onRefresh()
       onNotify('success', 'Snapshot semanal restaurado com sucesso.')
     } catch {
@@ -598,7 +614,7 @@ function AssistenteConfiguracao({
 
   async function coletarDadosDoTitular() {
     const filtrar = <T extends { created_by: string }>(rows: T[]) => rows.filter((r) => r.created_by === user.id)
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota] = await Promise.all([
       db.propriedades.toArray(),
       db.produtores.toArray(),
       db.variedades.toArray(),
@@ -610,7 +626,8 @@ function AssistenteConfiguracao({
       db.movimento_estoque.toArray(),
       db.venda_grao.toArray(),
       db.safras.toArray(),
-      db.frete_lancamentos.toArray()
+      db.frete_lancamentos.toArray(),
+      db.tarifas_frete_rota.toArray()
     ])
     return {
       propriedades: filtrar(propriedades),
@@ -624,7 +641,8 @@ function AssistenteConfiguracao({
       movimento_estoque: filtrar(movimento_estoque),
       venda_grao: filtrar(venda_grao),
       safras: filtrar(safras),
-      frete_lancamentos: filtrar(frete_lancamentos)
+      frete_lancamentos: filtrar(frete_lancamentos),
+      tarifas_frete_rota: filtrar(tarifas_frete_rota)
     }
   }
 
@@ -661,6 +679,7 @@ function AssistenteConfiguracao({
           venda_grao?: VendaGrao[]
           safras?: Safra[]
           frete_lancamentos?: FreteLancamento[]
+          tarifas_frete_rota?: TarifaFreteRota[]
         }
       }
       if (!json.dados) {
@@ -686,12 +705,13 @@ function AssistenteConfiguracao({
       const armazens = preparar(json.dados.armazens)
       const caminhoes = preparar(json.dados.caminhoes)
       const talhoes = preparar(json.dados.talhoes)
-      const cargas = preparar(json.dados.cargas)
+      const cargas = preparar(json.dados.cargas).map(normalizarCargaFrete)
       const estoque = preparar(json.dados.estoque_armazem)
       const movimentos = preparar(json.dados.movimento_estoque)
       const vendas = preparar(json.dados.venda_grao)
       const safras = preparar(json.dados.safras)
       const freteLancamentos = preparar(json.dados.frete_lancamentos)
+      const tarifasFreteRota = preparar(json.dados.tarifas_frete_rota)
 
       await db.propriedades.bulkPut(propriedades)
       await db.produtores.bulkPut(produtores)
@@ -705,6 +725,7 @@ function AssistenteConfiguracao({
       await db.venda_grao.bulkPut(vendas)
       await db.safras.bulkPut(safras)
       await db.frete_lancamentos.bulkPut(freteLancamentos)
+      await db.tarifas_frete_rota.bulkPut(tarifasFreteRota)
 
       for (const row of propriedades) await queueOp('propriedades', row.id, row)
       for (const row of produtores) await queueOp('produtores', row.id, row)
@@ -718,6 +739,7 @@ function AssistenteConfiguracao({
       for (const row of vendas) await queueOp('venda_grao', row.id, row)
       for (const row of safras) await queueOp('safras', row.id, row)
       for (const row of freteLancamentos) await queueOp('frete_lancamentos', row.id, row)
+      for (const row of tarifasFreteRota) await queueOp('tarifas_frete_rota', row.id, row)
 
       onRefresh()
       onNotify('success', 'Backup pessoal importado com sucesso. Clique em Sincronizar para enviar para nuvem.')
@@ -755,6 +777,7 @@ function AssistenteConfiguracao({
         await limparPorUsuario('movimento_estoque')
         await limparPorUsuario('venda_grao')
         await limparPorUsuario('frete_lancamentos')
+        await limparPorUsuario('tarifas_frete_rota')
         await limparPorUsuario('safras')
         await limparPorUsuario('estoque_armazem')
         await limparPorUsuario('cargas')
@@ -775,6 +798,7 @@ function AssistenteConfiguracao({
       await purgeLocalByUser(await db.movimento_estoque.toArray(), (id) => db.movimento_estoque.delete(id))
       await purgeLocalByUser(await db.venda_grao.toArray(), (id) => db.venda_grao.delete(id))
       await purgeLocalByUser(await db.frete_lancamentos.toArray(), (id) => db.frete_lancamentos.delete(id))
+      await purgeLocalByUser(await db.tarifas_frete_rota.toArray(), (id) => db.tarifas_frete_rota.delete(id))
       await purgeLocalByUser(await db.safras.toArray(), (id) => db.safras.delete(id))
       await purgeLocalByUser(await db.estoque_armazem.toArray(), (id) => db.estoque_armazem.delete(id))
       await purgeLocalByUser(await db.cargas.toArray(), (id) => db.cargas.delete(id))
@@ -845,7 +869,7 @@ function AssistenteConfiguracao({
   }
 
   async function gerarRelatorioLgpd() {
-    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos] = await Promise.all([
+    const [propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota] = await Promise.all([
       db.propriedades.count(),
       db.produtores.count(),
       db.variedades.count(),
@@ -857,7 +881,8 @@ function AssistenteConfiguracao({
       db.movimento_estoque.count(),
       db.venda_grao.count(),
       db.safras.count(),
-      db.frete_lancamentos.count()
+      db.frete_lancamentos.count(),
+      db.tarifas_frete_rota.count()
     ])
     const payload = {
       gerado_em: nowIso(),
@@ -870,7 +895,7 @@ function AssistenteConfiguracao({
         'Cumprimento de obrigacao legal/regulatoria quando aplicavel'
       ],
       inventario_tabelas: {
-        propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos
+        propriedades, produtores, variedades, armazens, caminhoes, talhoes, cargas, estoque_armazem, movimento_estoque, venda_grao, safras, frete_lancamentos, tarifas_frete_rota
       },
       direitos_titular_habilitados: [
         'Acesso aos dados (exportacao LGPD)',
@@ -901,6 +926,7 @@ function AssistenteConfiguracao({
           venda_grao?: VendaGrao[]
           safras?: Safra[]
           frete_lancamentos?: FreteLancamento[]
+          tarifas_frete_rota?: TarifaFreteRota[]
         }
       }
       if (!json.dados) {
@@ -915,12 +941,13 @@ function AssistenteConfiguracao({
       if (json.dados?.armazens) await db.armazens.bulkPut(json.dados.armazens)
       if (json.dados?.caminhoes) await db.caminhoes.bulkPut(json.dados.caminhoes)
       if (json.dados?.talhoes) await db.talhoes.bulkPut(json.dados.talhoes)
-      if (json.dados?.cargas) await db.cargas.bulkPut(json.dados.cargas)
+      if (json.dados?.cargas) await db.cargas.bulkPut(json.dados.cargas.map(normalizarCargaFrete))
       if (json.dados?.estoque_armazem) await db.estoque_armazem.bulkPut(json.dados.estoque_armazem)
       if (json.dados?.movimento_estoque) await db.movimento_estoque.bulkPut(json.dados.movimento_estoque)
       if (json.dados?.venda_grao) await db.venda_grao.bulkPut(json.dados.venda_grao)
       if (json.dados?.safras) await db.safras.bulkPut(json.dados.safras)
       if (json.dados?.frete_lancamentos) await db.frete_lancamentos.bulkPut(json.dados.frete_lancamentos)
+      if (json.dados?.tarifas_frete_rota) await db.tarifas_frete_rota.bulkPut(json.dados.tarifas_frete_rota)
       setBackupInfo('Backup importado com sucesso. Clique em Sincronizar para enviar para nuvem.')
       onNotify('success', 'Backup importado com sucesso.')
     } catch {
@@ -962,6 +989,7 @@ function AssistenteConfiguracao({
         await limparTabelaNuvem('movimento_estoque')
         await limparTabelaNuvem('venda_grao')
         await limparTabelaNuvem('frete_lancamentos')
+        await limparTabelaNuvem('tarifas_frete_rota')
         await limparTabelaNuvem('safras')
         await limparTabelaNuvem('estoque_armazem')
         await limparTabelaNuvem('cargas')
@@ -977,6 +1005,7 @@ function AssistenteConfiguracao({
       await db.movimento_estoque.clear()
       await db.venda_grao.clear()
       await db.frete_lancamentos.clear()
+      await db.tarifas_frete_rota.clear()
       await db.safras.clear()
       await db.estoque_armazem.clear()
       await db.cargas.clear()
@@ -1235,6 +1264,7 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
       await db.cargas.clear()
       await db.venda_grao.clear()
       await db.frete_lancamentos.clear()
+      await db.tarifas_frete_rota.clear()
       await db.safras.clear()
       await db.movimento_estoque.clear()
       await db.estoque_armazem.clear()
@@ -1823,6 +1853,7 @@ function NovaCarga({
   const [variedadeId, setVariedadeId] = useState('')
   const [armazemId, setArmazemId] = useState('')
   const [refs, setRefs] = useState<{[k: string]: BaseEntity[] | Talhao[]}>({})
+  const [tarifasFrete, setTarifasFrete] = useState<TarifaFreteRota[]>([])
   const [errors, setErrors] = useState<string[]>([])
   const [ultimasCargas, setUltimasCargas] = useState<Carga[]>([])
   const [qtdCargasLocal, setQtdCargasLocal] = useState(0)
@@ -1836,10 +1867,10 @@ function NovaCarga({
     const [rows, ops] = await Promise.all([db.cargas.toArray(), db.pending_ops.toArray()])
     const pendentes = ops
       .filter((op) => op.table === 'cargas' && op.op === 'upsert' && op.payload && typeof op.payload === 'object')
-      .map((op) => op.payload as Carga)
+      .map((op) => normalizarCargaFrete(op.payload as Carga))
 
     const mapa = new Map<string, Carga>()
-    for (const c of [...rows, ...pendentes]) {
+    for (const c of [...rows.map(normalizarCargaFrete), ...pendentes]) {
       if (!c?.id) continue
       mapa.set(c.id, c)
     }
@@ -1860,15 +1891,17 @@ function NovaCarga({
       db.variedades.toArray(),
       db.armazens.toArray(),
       db.caminhoes.toArray(),
+      db.tarifas_frete_rota.toArray(),
       db.cargas.toArray(),
       db.pending_ops.toArray()
-    ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes, rows, ops]) => {
+    ]).then(([propriedades, talhoes, produtores, variedades, armazens, caminhoes, tarifas, rows, ops]) => {
       setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
+      setTarifasFrete(tarifas.filter((t) => t.created_by === userId))
       const pendentes = ops
         .filter((op) => op.table === 'cargas' && op.op === 'upsert' && op.payload && typeof op.payload === 'object')
-        .map((op) => op.payload as Carga)
+        .map((op) => normalizarCargaFrete(op.payload as Carga))
       const mapa = new Map<string, Carga>()
-      for (const c of [...rows, ...pendentes]) {
+      for (const c of [...rows.map(normalizarCargaFrete), ...pendentes]) {
         if (!c?.id) continue
         mapa.set(c.id, c)
       }
@@ -1880,12 +1913,21 @@ function NovaCarga({
           .slice(0, 3)
       )
     })
-  }, [refreshTick])
+  }, [refreshTick, userId])
 
   const sacas = useMemo(() => {
     const liquido = parsePtBrNumber(pesoLiquido || '0')
     return Number.isFinite(liquido) ? toSacas(liquido) : 0
   }, [pesoLiquido])
+
+  const tarifaSelecionada = useMemo(
+    () => tarifasFrete.find((tarifa) => tarifa.propriedade_id === propriedadeId && tarifa.armazem_id === armazemId),
+    [armazemId, propriedadeId, tarifasFrete]
+  )
+  const valorFreteAtual = useMemo(
+    () => calcularFreteCarga(sacas, tarifaSelecionada?.valor_por_saca ?? 0),
+    [sacas, tarifaSelecionada]
+  )
 
   const liquidosDivididosValidos = useMemo(
     () => splitItems.map((item) => parsePtBrNumber(item.pesoLiquido)).filter((n) => Number.isFinite(n) && n > 0),
@@ -1966,6 +2008,8 @@ function NovaCarga({
           peso_bruto_kg: brutoLinha,
           peso_liquido_kg: linha.liquidoNum,
           sacas: toSacas(linha.liquidoNum),
+          frete_valor_por_saca: tarifaSelecionada?.valor_por_saca ?? 0,
+          frete_valor_total: calcularFreteCarga(toSacas(linha.liquidoNum), tarifaSelecionada?.valor_por_saca ?? 0),
           sync_status: 'pending_sync',
           created_at: now,
           updated_at: now,
@@ -2048,6 +2092,8 @@ function NovaCarga({
       peso_bruto_kg: brutoAtual,
       peso_liquido_kg: liquidoAtual,
       sacas,
+      frete_valor_por_saca: tarifaSelecionada?.valor_por_saca ?? 0,
+      frete_valor_total: calcularFreteCarga(sacas, tarifaSelecionada?.valor_por_saca ?? 0),
       sync_status: 'pending_sync',
       created_at: now,
       updated_at: now,
@@ -2097,6 +2143,11 @@ function NovaCarga({
         <input type="checkbox" checked={modoDividido} onChange={(e) => setModoDividido(e.target.checked)} /> Dividir carga por talhao e variedade
       </label>
       {!modoDividido && <p className="info">Sacas (automatico): <strong>{sacas.toFixed(2)}</strong></p>}
+      <p className="info">
+        Tarifa da rota: <strong>{tarifaSelecionada ? `R$ ${formatPtBrNumber(tarifaSelecionada.valor_por_saca)}/saca` : 'nao cadastrada'}</strong>
+        {!modoDividido && ` | Frete estimado desta carga: R$ ${formatPtBrNumber(valorFreteAtual)}`}
+      </p>
+      {!tarifaSelecionada && <p className="muted">Sem tarifa para esta rota. A carga sera salva com frete R$ 0,00 e podera ser reprocessada depois.</p>}
       {modoDividido && (
         <section className="panel">
           <h3>Divisao da carga</h3>
@@ -2160,7 +2211,7 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
 
   useEffect(() => {
     void Promise.all([db.cargas.toArray(), db.talhoes.toArray(), db.caminhoes.toArray(), db.pending_ops.toArray()]).then(([cs, ts, cms, ops]) => {
-      setCargas(cs)
+      setCargas(cs.map(normalizarCargaFrete))
       setTalhoes(ts)
       setCaminhoes(cms)
       setPendingIds(new Set(ops.map((o) => o.record_id)))
@@ -2228,7 +2279,7 @@ function Analises({ refreshTick, userId }: { refreshTick: number; userId: string
       db.produtores.toArray(),
       db.armazens.toArray()
     ]).then(([cs, ts, vs, ps, ars]) => {
-      setCargas(cs)
+      setCargas(cs.map(normalizarCargaFrete))
       setTalhoes(ts)
       setVariedades(vs)
       setProdutores(ps)
@@ -3138,13 +3189,18 @@ function Frete({
   const [cargas, setCargas] = useState<Carga[]>([])
   const [caminhoes, setCaminhoes] = useState<BaseEntity[]>([])
   const [propriedades, setPropriedades] = useState<BaseEntity[]>([])
+  const [armazens, setArmazens] = useState<BaseEntity[]>([])
   const [safras, setSafras] = useState<Safra[]>([])
   const [lancamentos, setLancamentos] = useState<FreteLancamento[]>([])
+  const [tarifasFrete, setTarifasFrete] = useState<TarifaFreteRota[]>([])
   const [safraId, setSafraId] = useState('')
   const [caminhaoId, setCaminhaoId] = useState('')
   const [dataInicio, setDataInicio] = useState('')
   const [dataFim, setDataFim] = useState('')
-  const [valorPorSaca, setValorPorSaca] = useState('')
+  const [tarifaPropriedadeId, setTarifaPropriedadeId] = useState('')
+  const [tarifaArmazemId, setTarifaArmazemId] = useState('')
+  const [tarifaValorPorSaca, setTarifaValorPorSaca] = useState('')
+  const [tarifaObservacao, setTarifaObservacao] = useState('')
   const [safraNome, setSafraNome] = useState('')
   const [safraCultura, setSafraCultura] = useState('')
   const [safraAno, setSafraAno] = useState(String(new Date().getFullYear()))
@@ -3166,18 +3222,22 @@ function Frete({
   const [reciboDocumentoNumero, setReciboDocumentoNumero] = useState('')
 
   const carregar = useCallback(async () => {
-    const [cs, cms, props, sfs, lancs] = await Promise.all([
+    const [cs, cms, props, arms, sfs, lancs, tarifas] = await Promise.all([
       db.cargas.toArray(),
       db.caminhoes.toArray(),
       db.propriedades.toArray(),
+      db.armazens.toArray(),
       db.safras.toArray(),
-      db.frete_lancamentos.toArray()
+      db.frete_lancamentos.toArray(),
+      db.tarifas_frete_rota.toArray()
     ])
-      setCargas(cs)
-      setCaminhoes(cms)
-      setPropriedades(props)
+    setCargas(cs.map(normalizarCargaFrete))
+    setCaminhoes(cms)
+    setPropriedades(props)
+    setArmazens(arms)
     setSafras(sfs.filter((s) => s.created_by === userId).sort((a, b) => b.data_inicio.localeCompare(a.data_inicio)))
     setLancamentos(lancs.filter((l) => l.created_by === userId))
+    setTarifasFrete(tarifas.filter((t) => t.created_by === userId))
   }, [userId])
 
   useEffect(() => {
@@ -3185,6 +3245,7 @@ function Frete({
   }, [carregar, refreshTick])
 
   const safraSelecionada = safras.find((s) => s.id === safraId)
+  const tarifaSelecionada = tarifasFrete.find((t) => t.propriedade_id === tarifaPropriedadeId && t.armazem_id === tarifaArmazemId)
 
   function selecionarSafra(id: string) {
     setSafraId(id)
@@ -3195,7 +3256,25 @@ function Frete({
     if (!reciboPagador && propriedades[0]?.nome) setReciboPagador(propriedades[0].nome)
   }
 
+  function preencherTarifaDaRota(propriedadeIdAtual: string, armazemIdAtual: string) {
+    const tarifa = tarifasFrete.find((item) => item.propriedade_id === propriedadeIdAtual && item.armazem_id === armazemIdAtual)
+    setTarifaValorPorSaca(tarifa ? String(tarifa.valor_por_saca) : '')
+    setTarifaObservacao(tarifa?.observacao ?? '')
+  }
+
+  function selecionarPropriedadeTarifa(id: string) {
+    setTarifaPropriedadeId(id)
+    preencherTarifaDaRota(id, tarifaArmazemId)
+  }
+
+  function selecionarArmazemTarifa(id: string) {
+    setTarifaArmazemId(id)
+    preencherTarifaDaRota(tarifaPropriedadeId, id)
+  }
+
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
+  const nomePropriedade = new Map(propriedades.map((item) => [item.id, item.nome]))
+  const nomeArmazem = new Map(armazens.map((item) => [item.id, item.nome]))
   const filtradas = cargas.filter((c) => {
     if (caminhaoId && c.placa !== caminhaoId) return false
     if (dataInicio && c.data < dataInicio) return false
@@ -3206,7 +3285,8 @@ function Frete({
   const totalViagens = filtradas.length
   const totalKgBruto = filtradas.reduce((acc, c) => acc + c.peso_bruto_kg, 0)
   const totalSacas = filtradas.reduce((acc, c) => acc + c.sacas, 0)
-  const valorSacaNum = parsePtBrNumber(valorPorSaca)
+  const totalFreteBruto = filtradas.reduce((acc, c) => acc + c.frete_valor_total, 0)
+  const tarifaValorNum = parsePtBrNumber(tarifaValorPorSaca)
   const lancamentosFiltrados = lancamentos
     .filter((l) => (!safraId || l.safra_id === safraId) && (!caminhaoId || l.caminhao_id === caminhaoId))
     .sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
@@ -3215,10 +3295,20 @@ function Frete({
   const fechamento = calcularFechamentoFrete({
     totalViagens,
     totalSacas,
-    valorPorSaca: Number.isFinite(valorSacaNum) ? valorSacaNum : 0,
+    freteBruto: totalFreteBruto,
     lancamentos: lancamentosFiltrados
   })
   const dieselValorAtual = calcularValorDiesel(parsePtBrNumber(dieselLitros), parsePtBrNumber(dieselPreco))
+  const cargasDaRota = cargas.filter((c) => {
+    if (!tarifaPropriedadeId || c.propriedade_id !== tarifaPropriedadeId) return false
+    if (!tarifaArmazemId || c.armazem_id !== tarifaArmazemId) return false
+    if (dataInicio && c.data < dataInicio) return false
+    if (dataFim && c.data > dataFim) return false
+    return true
+  })
+  const resumoReprocessamento = Number.isFinite(tarifaValorNum) && tarifaValorNum >= 0
+    ? resumirReprocessamentoFrete(cargasDaRota, tarifaValorNum)
+    : null
 
   async function salvarSafra() {
     if (!safraNome.trim() || !safraCultura.trim() || !safraAno.trim() || !safraInicio || !safraFim) {
@@ -3258,6 +3348,90 @@ function Frete({
     setSafraFim('')
     await carregar()
     onNotify('success', 'Safra salva com sucesso.')
+  }
+
+  async function salvarTarifaRota() {
+    if (!tarifaPropriedadeId || !tarifaArmazemId) {
+      onNotify('error', 'Selecione propriedade e armazem para salvar a tarifa da rota.')
+      return
+    }
+    const valorPorSaca = parsePtBrNumber(tarifaValorPorSaca)
+    if (!Number.isFinite(valorPorSaca) || valorPorSaca < 0) {
+      onNotify('error', 'Informe um valor por saca valido para a rota.')
+      return
+    }
+    const now = nowIso()
+    const row: TarifaFreteRota = tarifaSelecionada
+      ? {
+          ...tarifaSelecionada,
+          valor_por_saca: Number(valorPorSaca.toFixed(4)),
+          observacao: tarifaObservacao.trim() || undefined,
+          updated_at: now,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+      : {
+          id: makeId(),
+          propriedade_id: tarifaPropriedadeId,
+          armazem_id: tarifaArmazemId,
+          valor_por_saca: Number(valorPorSaca.toFixed(4)),
+          observacao: tarifaObservacao.trim() || undefined,
+          created_at: now,
+          updated_at: now,
+          created_by: userId,
+          updated_by: userId,
+          sync_status: 'pending_sync'
+        }
+    await db.tarifas_frete_rota.put(row)
+    await queueOp('tarifas_frete_rota', row.id, row)
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Tarifa salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    await carregar()
+    onNotify('success', tarifaSelecionada ? 'Tarifa da rota atualizada.' : 'Tarifa da rota cadastrada.')
+  }
+
+  async function reprocessarCargasDaRota() {
+    if (!tarifaPropriedadeId || !tarifaArmazemId) {
+      onNotify('error', 'Selecione a rota para reprocessar as cargas.')
+      return
+    }
+    if (!resumoReprocessamento || !Number.isFinite(tarifaValorNum) || tarifaValorNum < 0) {
+      onNotify('error', 'Informe uma tarifa valida para reprocessar a rota.')
+      return
+    }
+    if (cargasDaRota.length === 0) {
+      onNotify('error', 'Nenhuma carga encontrada para esta rota e periodo.')
+      return
+    }
+    const rotaNome = `${nomePropriedade.get(tarifaPropriedadeId) ?? tarifaPropriedadeId} -> ${nomeArmazem.get(tarifaArmazemId) ?? tarifaArmazemId}`
+    const confirmar = window.confirm(
+      `Reprocessar ${resumoReprocessamento.quantidadeCargas} carga(s) da rota ${rotaNome}?\n\nTotal atual: R$ ${formatPtBrNumber(resumoReprocessamento.totalAnterior)}\nNovo total: R$ ${formatPtBrNumber(resumoReprocessamento.totalNovo)}\nDiferenca: R$ ${formatPtBrNumber(resumoReprocessamento.diferenca)}`
+    )
+    if (!confirmar) return
+
+    const now = nowIso()
+    for (const carga of cargasDaRota) {
+      const updated: Carga = {
+        ...carga,
+        frete_valor_por_saca: Number(tarifaValorNum.toFixed(4)),
+        frete_valor_total: calcularFreteCarga(carga.sacas, tarifaValorNum),
+        updated_at: now,
+        updated_by: userId,
+        sync_status: 'pending_sync'
+      }
+      await db.cargas.put(updated)
+      await queueOp('cargas', updated.id, updated)
+    }
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Reprocessamento salvo neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    await carregar()
+    onNotify('success', `${resumoReprocessamento.quantidadeCargas} carga(s) reprocessadas na rota.`)
   }
 
   function validarContextoLancamento() {
@@ -3383,7 +3557,7 @@ function Frete({
       ['resumo', 'total_viagens', String(totalViagens), '', '', '', '', '', ''],
       ['resumo', 'total_bruto_kg', '', '', totalKgBruto.toFixed(2), '', '', '', ''],
       ['resumo', 'total_sacas', '', '', '', fechamento.totalSacas.toFixed(2), '', '', ''],
-      ['resumo', 'valor_por_saca_rs', '', '', '', '', '', '', fechamento.valorPorSaca.toFixed(2)],
+      ['resumo', 'valor_medio_por_saca_rs', '', '', '', '', '', '', fechamento.valorPorSaca.toFixed(4)],
       ['resumo', 'frete_bruto_rs', '', '', '', '', '', '', fechamento.freteBruto.toFixed(2)],
       ['resumo', 'total_diesel_rs', '', '', '', '', '', '', fechamento.totalDiesel.toFixed(2)],
       ['resumo', 'total_vales_rs', '', '', '', '', '', '', fechamento.totalVales.toFixed(2)],
@@ -3398,7 +3572,7 @@ function Frete({
       c.sacas.toFixed(2),
       '',
       '',
-      (c.sacas * fechamento.valorPorSaca).toFixed(2)
+      c.frete_valor_total.toFixed(2)
     ])
     const lancRows = lancamentosFiltrados.map((l) => [
       l.tipo,
@@ -3466,7 +3640,7 @@ function Frete({
     y += 6
     doc.text(`Total em sacas: ${formatPtBrNumber(totalSacas)} sacas`, 14, y)
     y += 6
-    doc.text(`Valor por saca: R$ ${formatPtBrNumber(fechamento.valorPorSaca)}`, 14, y)
+    doc.text(`Valor medio por saca nas cargas: R$ ${formatPtBrNumber(fechamento.valorPorSaca)}`, 14, y)
     y += 6
     doc.text(`Frete bruto: R$ ${formatPtBrNumber(fechamento.freteBruto)}`, 14, y)
     y += 6
@@ -3486,7 +3660,7 @@ function Frete({
       doc.text('Nenhum registro encontrado.', 14, y)
     } else {
       for (const c of filtradas) {
-        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(c.sacas)} sacas | frete R$ ${formatPtBrNumber(c.sacas * fechamento.valorPorSaca)}`
+        const linhaFrete = `${formatDateBr(c.data)} | ${placaPorId.get(c.placa) ?? c.placa} | ${formatPtBrNumber(c.peso_bruto_kg)} kg bruto | ${formatPtBrNumber(c.sacas)} sacas | frete R$ ${formatPtBrNumber(c.frete_valor_total)}`
         const partes = doc.splitTextToSize(linhaFrete, 180)
         y = ensureSpace(doc, y, partes.length * 5 + 4)
         doc.text(partes, 14, y)
@@ -3588,13 +3762,38 @@ function Frete({
         <button onClick={() => void salvarSafra()}>Salvar safra</button>
       </div>
 
+      <h3>Tarifa por rota</h3>
+      <div className="grid">
+        <SelectFromList label="Propriedade da rota" value={tarifaPropriedadeId} onChange={selecionarPropriedadeTarifa} items={propriedades} />
+        <SelectFromList label="Armazem destino" value={tarifaArmazemId} onChange={selecionarArmazemTarifa} items={armazens} />
+        <input placeholder="Valor por saca da rota (R$)" value={tarifaValorPorSaca} onChange={(e) => setTarifaValorPorSaca(e.target.value)} />
+        <input placeholder="Observacao da rota" value={tarifaObservacao} onChange={(e) => setTarifaObservacao(e.target.value)} />
+      </div>
+      <div className="actions">
+        <button onClick={() => void salvarTarifaRota()}>{tarifaSelecionada ? 'Atualizar tarifa da rota' : 'Salvar tarifa da rota'}</button>
+      </div>
+      {resumoReprocessamento && (
+        <>
+          <div className="kpis">
+            <article><span>Cargas da rota no periodo</span><strong>{resumoReprocessamento.quantidadeCargas}</strong></article>
+            <article><span>Total atual da rota (R$)</span><strong>{formatPtBrNumber(resumoReprocessamento.totalAnterior)}</strong></article>
+            <article><span>Novo total da rota (R$)</span><strong>{formatPtBrNumber(resumoReprocessamento.totalNovo)}</strong></article>
+            <article><span>Diferenca do reprocessamento (R$)</span><strong>{formatPtBrNumber(resumoReprocessamento.diferenca)}</strong></article>
+          </div>
+          <div className="actions">
+            <button onClick={() => void reprocessarCargasDaRota()} disabled={resumoReprocessamento.quantidadeCargas === 0}>
+              Reprocessar cargas desta rota
+            </button>
+          </div>
+        </>
+      )}
+
       <h3>Fechamento</h3>
       <div className="grid frete-filtros">
         <SelectFromList label="Safra" value={safraId} onChange={selecionarSafra} items={safras} />
         <SelectFromList label="Caminhao" value={caminhaoId} onChange={setCaminhaoId} items={caminhoes} />
         <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
         <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
-        <input placeholder="Valor por saca (R$)" value={valorPorSaca} onChange={(e) => setValorPorSaca(e.target.value)} />
       </div>
       <div className="kpis">
         <article><span>Total de viagens</span><strong>{totalViagens}</strong></article>
@@ -3685,7 +3884,7 @@ function Frete({
         {filtradas.map((c) => (
           <li key={c.id}>
             {c.data} | {placaPorId.get(c.placa) ?? c.placa} | {formatPtBrNumber(c.peso_bruto_kg)} kg bruto | {formatPtBrNumber(c.sacas)} sacas
-            {Number.isFinite(valorSacaNum) ? ` | frete R$ ${formatPtBrNumber(c.sacas * fechamento.valorPorSaca)}` : ''}
+            {` | frete R$ ${formatPtBrNumber(c.frete_valor_total)} | rota ${nomePropriedade.get(c.propriedade_id) ?? '-'} -> ${nomeArmazem.get(c.armazem_id) ?? '-'}`}
           </li>
         ))}
       </ul>
@@ -3721,7 +3920,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       db.caminhoes.toArray(),
       db.pending_ops.toArray()
     ]).then(([cs, propriedades, talhoes, produtores, variedades, armazens, caminhoes, ops]) => {
-      setCargas(cs)
+      setCargas(cs.map(normalizarCargaFrete))
       setRefs({ propriedades, talhoes, produtores, variedades, armazens, caminhoes })
       setPendingIds(new Set(ops.map((o) => o.record_id)))
     })
@@ -3785,6 +3984,10 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
     if (!original) return
     const sacasAntigas = original.sacas
     const armazemAntigo = original.armazem_id
+    const liquidoAtualizado = parsePtBrNumber(editLiquido)
+    const sacasAtualizadas = toSacas(liquidoAtualizado)
+    const tarifaRota = await db.tarifas_frete_rota.where('[propriedade_id+armazem_id]').equals([editPropriedadeId, editArmazemId]).first()
+    const freteValorPorSaca = tarifaRota?.valor_por_saca ?? original.frete_valor_por_saca ?? 0
     const updated: Carga = {
       ...original,
       data: editData,
@@ -3795,8 +3998,10 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       variedade_id: editVariedadeId,
       armazem_id: editArmazemId,
       peso_bruto_kg: parsePtBrNumber(editBruto),
-      peso_liquido_kg: parsePtBrNumber(editLiquido),
-      sacas: toSacas(parsePtBrNumber(editLiquido)),
+      peso_liquido_kg: liquidoAtualizado,
+      sacas: sacasAtualizadas,
+      frete_valor_por_saca: freteValorPorSaca,
+      frete_valor_total: calcularFreteCarga(sacasAtualizadas, freteValorPorSaca),
       updated_at: nowIso(),
       updated_by: userId,
       sync_status: 'pending_sync'
@@ -3911,7 +4116,7 @@ function Historico({ userId, refreshTick, onSaved, onNotify }: { userId: string;
       <ul>
         {filtered.map((c) => (
           <li key={c.id}>
-            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Status: {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
+            {c.data} | Placa: {placaLegivel(c.placa, nomeCaminhao.get(c.placa))} | Propriedade: {nomePropriedade.get(c.propriedade_id) ?? '-'} | Talhao: {nomeTalhao.get(c.talhao_id) ?? '-'} | Produtor: {nomeProdutor.get(c.produtor_id) ?? '-'} | Variedade: {nomeVariedade.get(c.variedade_id) ?? '-'} | Armazem: {nomeArmazem.get(c.armazem_id) ?? '-'} | Liquido: {formatPtBrNumber(c.peso_liquido_kg)} kg | Bruto: {formatPtBrNumber(c.peso_bruto_kg)} kg | Frete: R$ {formatPtBrNumber(c.frete_valor_total)} ({formatPtBrNumber(c.frete_valor_por_saca)}/saca) | Status: {statusSyncLegivel(c.sync_status, pendingIds.has(c.id))}
             <button onClick={() => iniciarEdicao(c)}>Editar</button>
             <button onClick={() => void apagarCarga(c.id)}>Apagar</button>
           </li>
@@ -4004,6 +4209,38 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
   await db.safras.put(safra)
   await queueOp('safras', safra.id, safra)
 
+  const tarifas: TarifaFreteRota[] = [
+    {
+      id: makeId(),
+      propriedade_id: propriedade.id,
+      armazem_id: armazemSede.id,
+      valor_por_saca: 2,
+      observacao: 'Rota curta para silo da sede',
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    },
+    {
+      id: makeId(),
+      propriedade_id: propriedade.id,
+      armazem_id: armazemCoop.id,
+      valor_por_saca: 2.35,
+      observacao: 'Rota mais longa ate cooperativa',
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+  ]
+  for (const tarifa of tarifas) {
+    await db.tarifas_frete_rota.put(tarifa)
+    await queueOp('tarifas_frete_rota', tarifa.id, tarifa)
+  }
+  const tarifaPorRota = new Map(tarifas.map((tarifa) => [rotaFreteKey(tarifa.propriedade_id, tarifa.armazem_id), tarifa.valor_por_saca]))
+
   const cargasTeste = [
     ['2026-05-22', caminhaoA.id, talhaoNorte.id, produtorPaulo.id, sojaBmx.id, armazemSede.id, 36500, 34200],
     ['2026-05-23', caminhaoB.id, talhaoSul.id, produtorPaulo.id, sojaM7110.id, armazemSede.id, 35800, 33100],
@@ -4028,6 +4265,8 @@ async function bootstrapDadosTeste(userId: string): Promise<{ created: boolean; 
       peso_bruto_kg: bruto,
       peso_liquido_kg: liquido,
       sacas: toSacas(liquido),
+      frete_valor_por_saca: tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0,
+      frete_valor_total: calcularFreteCarga(toSacas(liquido), tarifaPorRota.get(rotaFreteKey(propriedade.id, armazemId)) ?? 0),
       sync_status: 'pending_sync',
       created_at: now,
       updated_at: now,

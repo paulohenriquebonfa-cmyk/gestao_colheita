@@ -34,6 +34,8 @@ describe('analises - produtividade por variedade no talhao', () => {
         peso_bruto_kg: 12000,
         peso_liquido_kg: 12000,
         sacas: 200,
+        frete_valor_por_saca: 2,
+        frete_valor_total: 400,
         sync_status: 'synced',
         created_at: '2026-05-30T10:00:00.000Z',
         updated_at: '2026-05-30T10:00:00.000Z',
@@ -52,6 +54,8 @@ describe('analises - produtividade por variedade no talhao', () => {
         peso_bruto_kg: 9000,
         peso_liquido_kg: 9000,
         sacas: 150,
+        frete_valor_por_saca: 2,
+        frete_valor_total: 300,
         sync_status: 'synced',
         created_at: '2026-05-30T10:10:00.000Z',
         updated_at: '2026-05-30T10:10:00.000Z',
@@ -87,6 +91,8 @@ describe('analises - produtividade por variedade no talhao', () => {
         peso_bruto_kg: 6000,
         peso_liquido_kg: 6000,
         sacas: 100,
+        frete_valor_por_saca: 2,
+        frete_valor_total: 200,
         sync_status: 'synced',
         created_at: '2026-05-30T10:00:00.000Z',
         updated_at: '2026-05-30T10:00:00.000Z',
@@ -100,4 +106,3 @@ describe('analises - produtividade por variedade no talhao', () => {
     expect(resultado[0].sc_ha).toBe(0)
   })
 })
-

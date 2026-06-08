@@ -26,11 +26,26 @@ export interface Carga {
   peso_bruto_kg: number
   peso_liquido_kg: number
   sacas: number
+  frete_valor_por_saca: number
+  frete_valor_total: number
   sync_status: SyncStatus
   created_at: string
   updated_at: string
   created_by: string
   updated_by: string
+}
+
+export interface TarifaFreteRota {
+  id: string
+  propriedade_id: string
+  armazem_id: string
+  valor_por_saca: number
+  observacao?: string
+  created_at: string
+  updated_at: string
+  created_by: string
+  updated_by: string
+  sync_status: SyncStatus
 }
 
 export interface EstoqueArmazem {
