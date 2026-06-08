@@ -36,6 +36,110 @@ function normalizarCargaFrete(carga: Carga): Carga {
   }
 }
 
+function pathLinha(values: number[], width: number, height: number) {
+  if (values.length === 0) return ''
+  const max = Math.max(...values, 1)
+  const stepX = values.length > 1 ? width / (values.length - 1) : width / 2
+  return values
+    .map((value, index) => {
+      const x = values.length > 1 ? index * stepX : width / 2
+      const y = height - (value / max) * height
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
+    })
+    .join(' ')
+}
+
+function GraficoLinha({
+  title,
+  subtitle,
+  data
+}: {
+  title: string
+  subtitle: string
+  data: Array<{ label: string; value: number }>
+}) {
+  const width = 640
+  const height = 180
+  const values = data.map((item) => item.value)
+  const path = pathLinha(values, width, height)
+  const max = Math.max(...values, 1)
+
+  return (
+    <section className="chart-panel chart-panel-wide">
+      <div className="chart-header">
+        <h3>{title}</h3>
+        <p className="muted">{subtitle}</p>
+      </div>
+      {data.length === 0 ? (
+        <p className="muted">Sem dados suficientes para exibir este grafico.</p>
+      ) : (
+        <>
+          <svg className="chart-line" viewBox={`0 0 ${width} ${height + 30}`} role="img" aria-label={title}>
+            <path d={path} className="chart-line-path" />
+            {data.map((item, index) => {
+              const x = data.length > 1 ? (index * width) / (data.length - 1) : width / 2
+              const y = height - (item.value / max) * height
+              return (
+                <g key={item.label}>
+                  <circle cx={x} cy={y} r="4" className="chart-line-dot" />
+                  <text x={x} y={height + 18} textAnchor="middle" className="chart-axis-label">
+                    {item.label}
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
+          <div className="chart-summary-row">
+            {data.map((item) => (
+              <span key={item.label}>{item.label}: <strong>{formatPtBrNumber(item.value)}</strong></span>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+function GraficoBarras({
+  title,
+  subtitle,
+  data,
+  suffix = ''
+}: {
+  title: string
+  subtitle: string
+  data: Array<{ label: string; value: number }>
+  suffix?: string
+}) {
+  const max = Math.max(...data.map((item) => item.value), 1)
+
+  return (
+    <section className="chart-panel">
+      <div className="chart-header">
+        <h3>{title}</h3>
+        <p className="muted">{subtitle}</p>
+      </div>
+      {data.length === 0 ? (
+        <p className="muted">Sem dados suficientes para exibir este grafico.</p>
+      ) : (
+        <div className="bar-chart">
+          {data.map((item) => (
+            <div className="bar-row" key={item.label}>
+              <div className="bar-row-head">
+                <span>{item.label}</span>
+                <strong>{formatPtBrNumber(item.value)}{suffix}</strong>
+              </div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${(item.value / max) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function placaLegivel(rawPlaca: string, nomeCaminhao?: string) {
   if (nomeCaminhao) return nomeCaminhao
   if (isUuidLike(rawPlaca)) return 'Caminhao sem placa cadastrada'
@@ -2208,13 +2312,15 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
   const [cargas, setCargas] = useState<Carga[]>([])
   const [talhoes, setTalhoes] = useState<Talhao[]>([])
   const [caminhoes, setCaminhoes] = useState<BaseEntity[]>([])
+  const [produtores, setProdutores] = useState<BaseEntity[]>([])
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    void Promise.all([db.cargas.toArray(), db.talhoes.toArray(), db.caminhoes.toArray(), db.pending_ops.toArray()]).then(([cs, ts, cms, ops]) => {
+    void Promise.all([db.cargas.toArray(), db.talhoes.toArray(), db.caminhoes.toArray(), db.produtores.toArray(), db.pending_ops.toArray()]).then(([cs, ts, cms, ps, ops]) => {
       setCargas(cs.map(normalizarCargaFrete))
       setTalhoes(ts)
       setCaminhoes(cms)
+      setProdutores(ps)
       setPendingIds(new Set(ops.map((o) => o.record_id)))
     })
   }, [refreshTick])
@@ -2228,7 +2334,24 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
     const subconjunto = cargas.filter((c) => c.talhao_id === t.id)
     const sacas = subconjunto.reduce((acc, c) => acc + c.sacas, 0)
     return { nome: t.nome, valor: produtividadeSacasPorHa(sacas, t.area_ha) }
-  })
+  }).filter((item) => item.valor > 0).sort((a, b) => b.valor - a.valor)
+
+  const colheitaPorDia = Array.from(
+    cargas.reduce((mapa, carga) => {
+      mapa.set(carga.data, (mapa.get(carga.data) ?? 0) + carga.sacas)
+      return mapa
+    }, new Map<string, number>())
+  )
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([data, valor]) => ({ label: formatDateBr(data).slice(0, 5), value: Number(valor.toFixed(2)) }))
+
+  const porProdutor = produtores.map((produtor) => {
+    const subconjunto = cargas.filter((carga) => carga.produtor_id === produtor.id)
+    return {
+      label: produtor.nome,
+      value: Number(subconjunto.reduce((acc, carga) => acc + carga.sacas, 0).toFixed(2))
+    }
+  }).filter((item) => item.value > 0).sort((a, b) => b.value - a.value)
 
   const placaPorId = new Map(caminhoes.map((c) => [c.id, c.nome]))
   const cargasOrdenadas = [...cargas].sort((a, b) => `${b.data}T${b.created_at}`.localeCompare(`${a.data}T${a.created_at}`))
@@ -2241,10 +2364,25 @@ function Dashboard({ refreshTick }: { refreshTick: number }) {
         <article><span>Total em sacas</span><strong>{totalSacas.toFixed(2)}</strong></article>
         <article><span>Produtividade geral (sacas/ha)</span><strong>{prodGeral.toFixed(2)}</strong></article>
       </div>
-      <h3>Produtividade por talhao (sacas/ha)</h3>
-      <ul>
-        {porTalhao.map((item, idx) => <li key={`${item.nome}-${idx}`}>{item.nome}: {item.valor.toFixed(2)}</li>)}
-      </ul>
+      <GraficoLinha
+        title="Colheita por dia"
+        subtitle="Evolucao diaria em sacas liquidas lancadas no sistema."
+        data={colheitaPorDia}
+      />
+      <div className="dashboard-chart-grid">
+        <GraficoBarras
+          title="Producao por talhao"
+          subtitle="Produtividade em sacas por hectare de cada talhao."
+          data={porTalhao.map((item) => ({ label: item.nome, value: Number(item.valor.toFixed(2)) }))}
+          suffix=" sc/ha"
+        />
+        <GraficoBarras
+          title="Sacas por produtor"
+          subtitle="Total de sacas liquidas recebidas por produtor."
+          data={porProdutor}
+          suffix=" sacas"
+        />
+      </div>
       <h3>Ultimas cargas</h3>
       <ul>
         {cargasOrdenadas.slice(0, 5).map((c) => (
