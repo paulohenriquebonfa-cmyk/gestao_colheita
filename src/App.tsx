@@ -899,14 +899,18 @@ function AssistenteConfiguracao({
       await excluirLote('propriedades', db.propriedades, testPropriedades)
       await excluirLote('armazens', db.armazens, testArmazens)
 
+      let syncOk = true
       try {
         await runSync()
       } catch {
-        onNotify('success', 'Dados de teste removidos deste aparelho. Clique em Sincronizar depois se a nuvem falhar.')
+        syncOk = false
+        onNotify('success', 'Dados de teste removidos deste aparelho. Clique em Sincronizar depois para concluir a limpeza na nuvem.')
       }
 
       onRefresh()
-      onNotify('success', 'Dados de teste excluidos com sucesso.')
+      if (syncOk) {
+        onNotify('success', 'Dados de teste excluidos com sucesso.')
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'erro desconhecido'
       onNotify('error', `Falha ao excluir dados de teste: ${msg}`)

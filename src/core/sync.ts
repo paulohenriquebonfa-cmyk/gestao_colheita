@@ -4,6 +4,36 @@ import type { BaseEntity, Carga, PendingOp, Safra, Talhao, TarifaFreteRota } fro
 
 const TABLES = ['propriedades', 'produtores', 'variedades', 'armazens', 'caminhoes', 'talhoes', 'cargas', 'estoque_armazem', 'movimento_estoque', 'venda_grao', 'pilot_participantes', 'feedback_items', 'area_variedade_talhao', 'safras', 'frete_lancamentos', 'tarifas_frete_rota'] as const
 
+const DELETE_PRIORITY: Record<(typeof TABLES)[number], number> = {
+  area_variedade_talhao: 0,
+  movimento_estoque: 1,
+  venda_grao: 2,
+  frete_lancamentos: 3,
+  tarifas_frete_rota: 4,
+  estoque_armazem: 5,
+  cargas: 6,
+  safras: 7,
+  talhoes: 8,
+  caminhoes: 9,
+  variedades: 10,
+  produtores: 11,
+  propriedades: 12,
+  armazens: 13,
+  pilot_participantes: 14,
+  feedback_items: 15
+}
+
+function comparePendingOps(a: PendingOp, b: PendingOp) {
+  if (a.op === 'delete' || b.op === 'delete') {
+    if (a.op !== b.op) return a.op === 'delete' ? -1 : 1
+    const aTable = a.table as (typeof TABLES)[number]
+    const bTable = b.table as (typeof TABLES)[number]
+    const priorityDiff = (DELETE_PRIORITY[aTable] ?? 999) - (DELETE_PRIORITY[bTable] ?? 999)
+    if (priorityDiff !== 0) return priorityDiff
+  }
+  return a.updated_at.localeCompare(b.updated_at)
+}
+
 function normalizePayloadForCloud(table: string, payload: Record<string, unknown>) {
   if (table !== 'pilot_participantes') return payload
   return {
@@ -361,7 +391,7 @@ export async function runSync() {
     return
   }
   try {
-    const ops = await db.pending_ops.orderBy('updated_at').toArray()
+    const ops = (await db.pending_ops.toArray()).sort(comparePendingOps)
     const failed: string[] = []
     for (const op of ops) {
       const ok = await pushOp(op)
