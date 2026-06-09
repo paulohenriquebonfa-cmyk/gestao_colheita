@@ -553,21 +553,34 @@ function App() {
       {notice && <div className={`notice ${notice.type}`}>{notice.message}</div>}
       {syncDebug && <div className="notice error">Detalhe tecnico: {syncDebug}</div>}
       <header className="topbar">
-        <div>
+        <div className="topbar-main">
+          <span className="eyebrow">Painel operacional</span>
           <h1>Gestao de Colheita</h1>
-          <p>{session.email} | Perfil: {userRole}{safraAtiva ? ` | Safra atual: ${safraAtiva.nome} (${safraAtiva.cultura} ${safraAtiva.ano})` : ''}</p>
+          <p>Controle diario de cargas, frete, estoque e safras em um unico painel.</p>
+          <div className="topbar-meta">
+            <span className="meta-pill">{session.email}</span>
+            <span className="meta-pill">Perfil: {userRole}</span>
+            <span className={`meta-pill ${safraAtiva ? 'meta-pill-strong' : ''}`}>
+              {safraAtiva ? `Safra: ${safraAtiva.nome} (${safraAtiva.cultura} ${safraAtiva.ano})` : 'Safra: nenhuma selecionada'}
+            </span>
+          </div>
         </div>
-        <div className="actions">
-          <select value={activeSafraId} onChange={(e) => { void selecionarSafraGlobal(session.id, e.target.value) }}>
-            <option value="">Selecione a safra</option>
-            {safrasGlobais.map((safra) => (
-              <option key={safra.id} value={safra.id}>
-                {`${safra.nome} | ${safra.cultura} ${safra.ano}${safra.ativa ? ' | ativa' : ''}`}
-              </option>
-            ))}
-          </select>
-          <button onClick={() => void handleSyncClick()}>Sincronizar</button>
-          <button onClick={logout}>Sair</button>
+        <div className="topbar-side">
+          <label className="toolbar-field">
+            <span>Safra em exibicao</span>
+            <select value={activeSafraId} onChange={(e) => { void selecionarSafraGlobal(session.id, e.target.value) }}>
+              <option value="">Selecione a safra</option>
+              {safrasGlobais.map((safra) => (
+                <option key={safra.id} value={safra.id}>
+                  {`${safra.nome} | ${safra.cultura} ${safra.ano}${safra.ativa ? ' | ativa' : ''}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="actions toolbar-actions">
+            <button onClick={() => void handleSyncClick()}>Sincronizar</button>
+            <button className="button-ghost" onClick={logout}>Sair</button>
+          </div>
         </div>
       </header>
 
