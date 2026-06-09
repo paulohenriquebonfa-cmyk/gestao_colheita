@@ -602,6 +602,14 @@ input[type="checkbox"] {
   .toolbar-actions button {
     flex: 1 1 0;
   }
+
+  .topbar-meta {
+    gap: 0.45rem;
+  }
+
+  .meta-pill {
+    max-width: 100%;
+  }
 }
 
 @media (max-width: 640px) {
@@ -610,13 +618,49 @@ input[type="checkbox"] {
     padding: 0.8rem 0.75rem 1.5rem;
   }
 
+  .topbar-main,
+  .topbar-side {
+    border-radius: 16px;
+  }
+
+  .topbar h1 {
+    font-size: clamp(1.9rem, 9vw, 2.4rem);
+  }
+
+  .topbar p {
+    font-size: 0.95rem;
+  }
+
+  .topbar-meta {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .meta-pill {
+    min-height: 0;
+    padding: 0.55rem 0.7rem;
+    border-radius: 12px;
+  }
+
+  .toolbar-field span {
+    font-size: 0.86rem;
+  }
+
+  .toolbar-field select {
+    min-height: 46px;
+  }
+
   .tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.45rem;
     padding: 0.65rem;
   }
 
   .tabs button {
-    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    padding-inline: 0.8rem;
   }
 
   .panel {
@@ -624,11 +668,74 @@ input[type="checkbox"] {
     border-radius: 16px;
   }
 
+  .panel h2 {
+    font-size: clamp(1.55rem, 8vw, 2rem);
+  }
+
+  .panel h3 {
+    font-size: 1.18rem;
+  }
+
+  .kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .kpis article {
+    min-height: 0;
+  }
+
+  .dashboard-chart-grid,
+  .row,
+  .grid,
+  .analysis-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-summary-row {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .bar-row-head {
+    align-items: start;
+    font-size: 0.9rem;
+  }
+
+  .bar-row-head strong {
+    text-align: right;
+  }
+
   .panel li {
     grid-template-columns: 1fr;
   }
 
+  .panel li button {
+    width: 100%;
+  }
+
   .panel li button + button {
     margin-left: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-actions {
+    flex-direction: column;
+  }
+
+  .toolbar-actions button,
+  .actions button,
+  .file-input-label {
+    width: 100%;
+  }
+
+  .chart-header p,
+  .muted,
+  .kpis span {
+    line-height: 1.4;
   }
 }
