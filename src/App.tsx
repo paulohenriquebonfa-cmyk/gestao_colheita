@@ -546,6 +546,7 @@ function App() {
   }
 
   const safraAtiva = safrasGlobais.find((item) => item.id === activeSafraId)
+  const currentTab: Tab = tab === 'feedback' || tab === 'operacao' ? 'config' : tab
 
   return (
     <main className="app-shell">
@@ -571,28 +572,24 @@ function App() {
       </header>
 
       <nav className="tabs">
-        <button onClick={() => setTab('dashboard')} className={tab === 'dashboard' ? 'active' : ''}>Dashboard</button>
-        {userRole !== 'leitura' && <button onClick={() => setTab('cargas')} className={tab === 'cargas' ? 'active' : ''}>Nova Carga</button>}
-        <button onClick={() => setTab('historico')} className={tab === 'historico' ? 'active' : ''}>Historico</button>
-        {userRole !== 'leitura' && <button onClick={() => setTab('cadastros')} className={tab === 'cadastros' ? 'active' : ''}>Cadastros</button>}
-        <button onClick={() => setTab('analises')} className={tab === 'analises' ? 'active' : ''}>Analises</button>
-        <button onClick={() => setTab('frete')} className={tab === 'frete' ? 'active' : ''}>Frete</button>
-        {userRole !== 'leitura' && <button onClick={() => setTab('vendas')} className={tab === 'vendas' ? 'active' : ''}>Armazenagem e Vendas</button>}
-        <button onClick={() => setTab('feedback')} className={tab === 'feedback' ? 'active' : ''}>Enviar Feedback</button>
-        {userRole === 'proprietario' && <button onClick={() => setTab('operacao')} className={tab === 'operacao' ? 'active' : ''}>Operacao Piloto</button>}
-        <button onClick={() => setTab('config')} className={tab === 'config' ? 'active' : ''}>Assistente</button>
+        <button onClick={() => setTab('dashboard')} className={currentTab === 'dashboard' ? 'active' : ''}>Dashboard</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('cargas')} className={currentTab === 'cargas' ? 'active' : ''}>Nova Carga</button>}
+        <button onClick={() => setTab('historico')} className={currentTab === 'historico' ? 'active' : ''}>Cargas</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('cadastros')} className={currentTab === 'cadastros' ? 'active' : ''}>Cadastros</button>}
+        <button onClick={() => setTab('analises')} className={currentTab === 'analises' ? 'active' : ''}>Analises</button>
+        <button onClick={() => setTab('frete')} className={currentTab === 'frete' ? 'active' : ''}>Frete</button>
+        {userRole !== 'leitura' && <button onClick={() => setTab('vendas')} className={currentTab === 'vendas' ? 'active' : ''}>Estoque e Vendas</button>}
+        <button onClick={() => setTab('config')} className={currentTab === 'config' ? 'active' : ''}>Configuracao</button>
       </nav>
 
-      {tab === 'dashboard' && <Dashboard refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
-      {tab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
-      {tab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} activeSafraId={activeSafraId} setActiveSafraId={(safraId) => { void selecionarSafraGlobal(session.id, safraId) }} onNotify={notify} />}
-      {tab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
-      {tab === 'feedback' && <FeedbackPiloto user={session} onNotify={notify} refreshTick={refreshTick} onSaved={triggerRefresh} isOwner={isOwner(session.email)} />}
-      {tab === 'operacao' && <OperacaoSaas user={session} onNotify={notify} />}
-      {tab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwner(session.email)} />}
+      {currentTab === 'dashboard' && <Dashboard refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
+      {currentTab === 'cargas' && userRole !== 'leitura' && <NovaCarga userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
+      {currentTab === 'historico' && <Historico userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
+      {currentTab === 'cadastros' && userRole !== 'leitura' && <Cadastros userId={session.id} onSaved={triggerRefresh} onNotify={notify} />}
+      {currentTab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
+      {currentTab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} activeSafraId={activeSafraId} setActiveSafraId={(safraId) => { void selecionarSafraGlobal(session.id, safraId) }} onNotify={notify} />}
+      {currentTab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
+      {currentTab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} refreshTick={refreshTick} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwner(session.email)} />}
       {onboardingOpen && (
         <OnboardingPiloto
           user={session}
@@ -611,6 +608,7 @@ function AssistenteConfiguracao({
   onNotify,
   user,
   onRefresh,
+  refreshTick,
   userRole,
   setUserRole,
   isOwnerUser
@@ -618,6 +616,7 @@ function AssistenteConfiguracao({
   onNotify: (type: NoticeType, message: string) => void
   user: UserSession
   onRefresh: () => void
+  refreshTick: number
   userRole: UserRole
   setUserRole: (role: UserRole) => void
   isOwnerUser: boolean
@@ -1451,8 +1450,8 @@ function AssistenteConfiguracao({
 
   return (
     <section className="panel">
-      <h2>Assistente de Configuracao</h2>
-      <p className="muted">Este painel mostra, em linguagem simples, o que falta para sincronizar entre aparelhos.</p>
+      <h2>Configuracao</h2>
+      <p className="muted">Este painel reune configuracoes, backup, sincronizacao, feedback e ferramentas administrativas.</p>
       <div className="kpis">
         <article>
           <span>Status de conexao online</span>
@@ -1482,7 +1481,7 @@ function AssistenteConfiguracao({
       )}
       {isOwnerUser && (
         <>
-      <h3>Configuracao do Piloto Gratuito</h3>
+      <h3>Administracao do Piloto</h3>
       <div className="grid">
         <label>
           <input type="checkbox" checked={pilotAtivo} onChange={(e) => setPilotAtivo(e.target.checked)} />
@@ -1496,7 +1495,7 @@ function AssistenteConfiguracao({
         <button onClick={salvarConfigPiloto}>Salvar configuracao do piloto</button>
       </div>
 
-      <h3>Backup</h3>
+      <h3>Backup e Restauracao</h3>
       <div className="actions">
         <button onClick={() => void exportarBackup()}>Exportar Backup (JSON)</button>
         <label className="file-input-label">
@@ -1505,11 +1504,16 @@ function AssistenteConfiguracao({
         </label>
         <button onClick={() => void salvarSnapshotSemanal()}>Salvar snapshot semanal</button>
         <button onClick={() => void restaurarSnapshotSemanal()}>Restore assistido</button>
-        <button onClick={() => void carregarDadosTeste()}>Carregar dados de teste</button>
-        <button onClick={() => void excluirDadosTeste()}>Excluir dados de teste</button>
         <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
+
+      <h3>Ambiente de Teste</h3>
+      <p className="muted">Estas acoes sao exclusivas do administrador e servem apenas para demonstracao e validacao do sistema.</p>
+      <div className="actions">
+        <button onClick={() => void carregarDadosTeste()}>Carregar dados de teste</button>
+        <button onClick={() => void excluirDadosTeste()}>Excluir dados de teste</button>
+      </div>
 
       <h3>Perfis e Acesso</h3>
       <div className="grid">
@@ -1594,6 +1598,16 @@ function AssistenteConfiguracao({
         <li>Boas praticas aplicadas: minimizacao de dados, autenticacao e trilha de auditoria por created_at/updated_at.</li>
         <li>Documentos comerciais/LGPD no projeto: docs/TERMOS_DE_USO.md, docs/POLITICA_DE_PRIVACIDADE.md e docs/DPA_MODELO.md.</li>
       </ul>
+
+      <FeedbackPiloto
+        user={user}
+        onNotify={onNotify}
+        refreshTick={refreshTick}
+        onSaved={onRefresh}
+        isOwner={isOwnerUser}
+      />
+
+      <OperacaoSaas user={user} onNotify={onNotify} />
       </>
       )}
     </section>
@@ -1795,7 +1809,7 @@ function OnboardingPiloto({
       <ul>
         <li>Sem cobranca nesta fase de demonstracao.</li>
         <li>Uso por convite individual e acompanhamento do administrador.</li>
-        <li>Voce pode enviar feedbacks na aba Enviar Feedback.</li>
+        <li>Voce pode enviar feedbacks na area Configuracao.</li>
       </ul>
       <button onClick={onClose}>Aceitar e continuar</button>
     </section>
@@ -1870,8 +1884,8 @@ function FeedbackPiloto({
 
   return (
     <section className="panel">
-      <h2>Enviar Feedback</h2>
-      <p className="muted">Use este formulario para sugerir melhorias do piloto gratuito.</p>
+      <h2>Feedback e Sugestoes</h2>
+      <p className="muted">Use este formulario para sugerir melhorias e registrar dificuldades reais de uso.</p>
       <div className="grid">
         <select value={categoria} onChange={(e) => setCategoria(e.target.value as FeedbackItem['categoria'])}>
           <option value="erro">Erro</option>
@@ -3699,7 +3713,7 @@ function ArmazenagemVendas({
 
   return (
     <section className="panel">
-      <h2>Armazenagem e Vendas</h2>
+      <h2>Estoque e Vendas</h2>
       <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="kpis">
         <article><span>Total vendido (sacas)</span><strong>{formatPtBrNumber(resumoVendas.totalSacas)}</strong></article>
@@ -4847,7 +4861,7 @@ function Historico({ userId, refreshTick, activeSafraId, activeSafra, onSaved, o
 
   return (
     <section className="panel">
-      <h2>Historico e Filtros</h2>
+      <h2>Cargas e Filtros</h2>
       <p className="muted">Safra em exibicao: {activeSafra ? `${activeSafra.nome} | ${activeSafra.cultura} ${activeSafra.ano}` : 'nenhuma safra selecionada'}</p>
       <div className="grid">
         <input type="date" value={filters.dataInicio ?? ''} onChange={(e) => setFilters((f) => ({ ...f, dataInicio: e.target.value }))} />
