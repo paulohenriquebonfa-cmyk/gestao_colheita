@@ -548,8 +548,53 @@ input[type="checkbox"] {
   margin: 0.5rem 0 0.9rem;
 }
 
+.frete-saldo-grid {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.frete-check-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.frete-check-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 48px;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: #fffefc;
+}
+
+.frete-recibo-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.frete-lancamentos li,
 .frete-lista li {
   border-left: 4px solid #2f5d50;
+}
+
+.frete-item-main {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.frete-item-main strong {
+  color: #1b4739;
+}
+
+.frete-item-main span {
+  color: var(--text-soft);
+  line-height: 1.35;
+}
+
+.frete-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .analysis-cards {
@@ -680,6 +725,21 @@ input[type="checkbox"] {
     grid-template-columns: 1fr;
   }
 
+  .frete-check-grid,
+  .frete-saldo-grid,
+  .frete-recibo-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .frete-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .frete-actions button {
+    width: 100%;
+  }
+
   .kpis article {
     min-height: 0;
   }
@@ -711,6 +771,16 @@ input[type="checkbox"] {
 
   .panel li button {
     width: 100%;
+  }
+
+  .frete-lancamentos li,
+  .frete-lista li {
+    gap: 0.75rem;
+    padding: 0.78rem 0.8rem;
+  }
+
+  .frete-item-actions {
+    justify-content: stretch;
   }
 
   .panel li button + button {

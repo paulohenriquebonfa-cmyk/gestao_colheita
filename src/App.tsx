@@ -4524,7 +4524,7 @@ function Frete({
         <input type="checkbox" checked={safraAtivaNova} onChange={(e) => setSafraAtivaNova(e.target.checked)} /> Definir esta safra como ativa ao salvar
       </label>
       <p className="muted">Saldo inicial opcional por armazem para comecar a nova safra sem misturar estoque antigo.</p>
-      <div className="grid">
+      <div className="grid frete-saldo-grid">
         {armazens.map((armazem) => (
           <input
             key={armazem.id}
@@ -4546,9 +4546,9 @@ function Frete({
         <input placeholder="Observacao da rota" value={tarifaObservacao} onChange={(e) => setTarifaObservacao(e.target.value)} />
       </div>
       <p className="muted">Marque abaixo os armazens que devem receber o mesmo valor de frete.</p>
-      <div className="grid">
+      <div className="grid frete-check-grid">
         {armazens.map((armazem) => (
-          <label key={armazem.id}>
+          <label key={armazem.id} className="frete-check-item">
             <input
               type="checkbox"
               checked={tarifaArmazemIds.includes(armazem.id)}
@@ -4623,7 +4623,7 @@ function Frete({
       </div>
 
       <h3>Recibo de pagamento</h3>
-      <div className="grid">
+      <div className="grid frete-recibo-grid">
         <input placeholder="Recebi de (pagador)" value={reciboPagador} onChange={(e) => setReciboPagador(e.target.value)} />
         <input placeholder="Valor recebido (R$)" value={reciboValor} onChange={(e) => setReciboValor(e.target.value)} />
         <input type="date" value={reciboData} onChange={(e) => setReciboData(e.target.value)} />
@@ -4647,7 +4647,7 @@ function Frete({
         />
       </div>
       <p className="info">Valor por extenso: {valorReaisPorExtenso(parsePtBrNumber(reciboValor))}</p>
-      <div className="actions">
+      <div className="actions frete-actions">
         <button
           onClick={() => setReciboValor(fechamento.valorLiquido > 0 ? String(fechamento.valorLiquido) : '')}
           disabled={fechamento.valorLiquido <= 0}
@@ -4658,12 +4658,23 @@ function Frete({
       </div>
 
       <h3>Abastecidas e vales</h3>
-      <ul>
+      <ul className="frete-lancamentos">
         {lancamentosFiltrados.length === 0 && <li>Nenhum diesel ou vale registrado para este filtro.</li>}
         {lancamentosFiltrados.map((l) => (
           <li key={l.id}>
-            {formatDateBr(l.data)} | {l.tipo === 'diesel' ? `Diesel: ${formatPtBrNumber(l.litros ?? 0)} L x R$ ${formatPtBrNumber(l.preco_litro ?? 0)}` : 'Vale'} | R$ {formatPtBrNumber(l.valor_total)}{l.observacao ? ` | ${l.observacao}` : ''}
-            <button onClick={() => void apagarLancamento(l.id)}>Apagar</button>
+            <div className="frete-item-main">
+              <strong>{formatDateBr(l.data)} - {l.tipo === 'diesel' ? 'Diesel' : 'Vale'}</strong>
+              <span>
+                {l.tipo === 'diesel'
+                  ? `${formatPtBrNumber(l.litros ?? 0)} L x R$ ${formatPtBrNumber(l.preco_litro ?? 0)}`
+                  : 'Vale em dinheiro'}
+              </span>
+              <span>Valor: R$ {formatPtBrNumber(l.valor_total)}</span>
+              {l.observacao && <span>{l.observacao}</span>}
+            </div>
+            <div className="frete-item-actions">
+              <button onClick={() => void apagarLancamento(l.id)}>Apagar</button>
+            </div>
           </li>
         ))}
       </ul>
@@ -4672,8 +4683,13 @@ function Frete({
       <ul className="frete-lista">
         {filtradas.map((c) => (
           <li key={c.id}>
-            {c.data} | {placaPorId.get(c.placa) ?? c.placa} | {formatPtBrNumber(c.peso_bruto_kg)} kg bruto | {formatPtBrNumber(c.sacas)} sacas
-            {` | frete R$ ${formatPtBrNumber(c.frete_valor_total)} | ${formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas frete | rota ${nomePropriedade.get(c.propriedade_id) ?? '-'} -> ${nomeArmazem.get(c.armazem_id) ?? '-'}`}
+            <div className="frete-item-main">
+              <strong>{formatDateBr(c.data)} - {placaPorId.get(c.placa) ?? c.placa}</strong>
+              <span>{formatPtBrNumber(c.peso_bruto_kg)} kg bruto</span>
+              <span>{formatPtBrNumber(calcularSacasFrete(c.peso_bruto_kg))} sacas de frete</span>
+              <span>Frete: R$ {formatPtBrNumber(c.frete_valor_total)}</span>
+              <span>Rota: {nomePropriedade.get(c.propriedade_id) ?? '-'} {'->'} {nomeArmazem.get(c.armazem_id) ?? '-'}</span>
+            </div>
           </li>
         ))}
       </ul>
