@@ -1492,6 +1492,13 @@ function AssistenteConfiguracao({
           Conta convidada: configuracoes administrativas ficam visiveis apenas para o dono do sistema.
         </p>
       )}
+      <FeedbackPiloto
+        user={user}
+        onNotify={onNotify}
+        refreshTick={refreshTick}
+        onSaved={onRefresh}
+        isOwner={isOwnerUser}
+      />
       {isOwnerUser && (
         <>
       <h3>Administracao do Piloto</h3>
@@ -1611,14 +1618,6 @@ function AssistenteConfiguracao({
         <li>Boas praticas aplicadas: minimizacao de dados, autenticacao e trilha de auditoria por created_at/updated_at.</li>
         <li>Documentos comerciais/LGPD no projeto: docs/TERMOS_DE_USO.md, docs/POLITICA_DE_PRIVACIDADE.md e docs/DPA_MODELO.md.</li>
       </ul>
-
-      <FeedbackPiloto
-        user={user}
-        onNotify={onNotify}
-        refreshTick={refreshTick}
-        onSaved={onRefresh}
-        isOwner={isOwnerUser}
-      />
 
       <OperacaoSaas user={user} onNotify={onNotify} />
       </>
@@ -1849,15 +1848,26 @@ function FeedbackPiloto({
   const [contato, setContato] = useState(user.email)
   const [lista, setLista] = useState<FeedbackItem[]>([])
 
+  const carregarLista = useCallback(async () => {
+    const rows = await db.feedback_items.orderBy('created_at').reverse().toArray()
+    const visiveis = rows.filter((item) => item.created_by === user.id || item.owner_user_id === user.id)
+    setLista(visiveis)
+  }, [user.id])
+
   useEffect(() => {
-    void db.feedback_items.orderBy('created_at').reverse().toArray().then(setLista)
-  }, [refreshTick])
+    void db.feedback_items.orderBy('created_at').reverse().toArray().then((rows) => {
+      const visiveis = rows.filter((item) => item.created_by === user.id || item.owner_user_id === user.id)
+      setLista(visiveis)
+    })
+  }, [refreshTick, user.id])
 
   async function enviar() {
     if (!descricao.trim() || !contexto.trim()) {
       onNotify('error', 'Descreva o feedback e o contexto da tela/fluxo.')
       return
     }
+    const participante = await db.pilot_participantes.where('email').equals(user.email.toLowerCase()).first()
+    const ownerUserId = participante?.created_by || user.id
     const now = nowIso()
     const row: FeedbackItem = {
       id: makeId(),
@@ -1867,6 +1877,7 @@ function FeedbackPiloto({
       contexto: contexto.trim(),
       contato: contato.trim() || undefined,
       status: 'novo',
+      owner_user_id: ownerUserId,
       created_at: now,
       updated_at: now,
       created_by: user.id,
@@ -1880,7 +1891,7 @@ function FeedbackPiloto({
     setDescricao('')
     setContexto('')
     onSaved()
-    setLista(await db.feedback_items.orderBy('created_at').reverse().toArray())
+    await carregarLista()
     onNotify('success', 'Feedback enviado com sucesso. Obrigado!')
   }
 
@@ -1891,7 +1902,7 @@ function FeedbackPiloto({
     await db.feedback_items.put(updated)
     await queueOp('feedback_items', updated.id, updated)
     await runSync()
-    setLista(await db.feedback_items.orderBy('created_at').reverse().toArray())
+    await carregarLista()
     onNotify('success', 'Status do feedback atualizado.')
   }
 

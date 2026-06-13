@@ -154,12 +154,16 @@ create table if not exists feedback_items (
   contexto text not null,
   contato text,
   status text not null,
+  owner_user_id text not null,
   created_at timestamptz not null,
   updated_at timestamptz not null,
   created_by text not null,
   updated_by text not null,
   sync_status text not null
 );
+alter table feedback_items add column if not exists owner_user_id text;
+update feedback_items set owner_user_id = created_by where owner_user_id is null or owner_user_id = '';
+alter table feedback_items alter column owner_user_id set not null;
 
 create table if not exists area_variedade_talhao (
   id uuid primary key,
@@ -302,8 +306,8 @@ create policy "farm_read_pilot_participantes" on pilot_participantes for select 
 create policy "farm_insert_pilot_participantes" on pilot_participantes for insert to authenticated with check (created_by = auth.uid()::text);
 create policy "farm_update_pilot_participantes" on pilot_participantes for update to authenticated using (created_by = auth.uid()::text or lower(email) = lower(auth.email())) with check (created_by = auth.uid()::text or lower(email) = lower(auth.email()));
 create policy "farm_delete_pilot_participantes" on pilot_participantes for delete to authenticated using (created_by = auth.uid()::text);
-create policy "farm_read_feedback_items" on feedback_items for select to authenticated using (created_by = auth.uid()::text);
-create policy "farm_write_feedback_items" on feedback_items for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
+create policy "farm_read_feedback_items" on feedback_items for select to authenticated using (created_by = auth.uid()::text or owner_user_id = auth.uid()::text);
+create policy "farm_write_feedback_items" on feedback_items for all to authenticated using (created_by = auth.uid()::text or owner_user_id = auth.uid()::text) with check (created_by = auth.uid()::text or owner_user_id = auth.uid()::text);
 create policy "farm_read_area_variedade_talhao" on area_variedade_talhao for select to authenticated using (created_by = auth.uid()::text);
 create policy "farm_write_area_variedade_talhao" on area_variedade_talhao for all to authenticated using (created_by = auth.uid()::text) with check (created_by = auth.uid()::text);
 create policy "farm_read_safras" on safras for select to authenticated using (created_by = auth.uid()::text);

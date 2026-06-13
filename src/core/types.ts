@@ -178,6 +178,7 @@ export interface FeedbackItem {
   contexto: string
   contato?: string
   status: 'novo' | 'em_analise' | 'planejado' | 'concluido'
+  owner_user_id: string
   created_at: string
   updated_at: string
   created_by: string
