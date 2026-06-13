@@ -21,6 +21,19 @@ type PilotConfig = { ativo: boolean; inicio: string; fim: string; ownerEmail: st
 const initialFilters: Filters = {}
 const LEGACY_SAFRA_NOME = 'Safra Legado'
 
+function isPasswordRecoveryUrl() {
+  if (typeof window === 'undefined') return false
+  const hash = window.location.hash.toLowerCase()
+  const search = window.location.search.toLowerCase()
+  return hash.includes('type=recovery') || search.includes('type=recovery')
+}
+
+function limparUrlAuth() {
+  if (typeof window === 'undefined') return
+  const cleanUrl = `${window.location.origin}${window.location.pathname}`
+  window.history.replaceState({}, document.title, cleanUrl)
+}
+
 function isUuidLike(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
@@ -238,6 +251,10 @@ function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
+  const [authInfo, setAuthInfo] = useState('')
+  const [recoveryMode, setRecoveryMode] = useState(() => hasSupabase && isPasswordRecoveryUrl())
+  const [novaSenha, setNovaSenha] = useState('')
+  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState('')
   const [tab, setTab] = useState<Tab>('dashboard')
   const [refreshTick, setRefreshTick] = useState(0)
   const [notice, setNotice] = useState<Notice>(null)
@@ -370,7 +387,24 @@ function App() {
 
   useEffect(() => {
     if (!hasSupabase || !supabase) return
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setRecoveryMode(true)
+        setAuthError('')
+        setAuthInfo('Defina sua nova senha para concluir a recuperacao de acesso.')
+        setSession(null)
+      }
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!hasSupabase || !supabase) return
     void supabase.auth.getSession().then(({ data }) => {
+      if (isPasswordRecoveryUrl()) {
+        setAuthInfo('Defina sua nova senha para concluir a recuperacao de acesso.')
+        return
+      }
       const s = data.session
       if (s?.user) {
         const sess = { id: s.user.id, email: s.user.email ?? 'usuario' }
@@ -427,6 +461,7 @@ function App() {
 
   async function login() {
     setAuthError('')
+    setAuthInfo('')
     if (hasSupabase && supabase) {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password })
       if (error || !data.user) {
@@ -477,6 +512,71 @@ function App() {
     setUserRole(await resolveRoleForSession(sess.id, sess.email))
     const onboardKey = `onboarding_done_${sess.id}`
     if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
+  }
+
+  async function solicitarRecuperacaoSenha() {
+    setAuthError('')
+    setAuthInfo('')
+    if (!hasSupabase || !supabase) {
+      setAuthError('Recuperacao de senha disponivel somente com Supabase configurado.')
+      return
+    }
+    if (!email.trim()) {
+      setAuthError('Informe o e-mail da conta para recuperar a senha.')
+      return
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}${window.location.pathname}`
+    })
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+    setAuthInfo('Enviamos as instrucoes de recuperacao para o e-mail informado.')
+  }
+
+  async function redefinirSenha() {
+    setAuthError('')
+    setAuthInfo('')
+    if (!supabase) {
+      setAuthError('Supabase nao configurado para redefinicao de senha.')
+      return
+    }
+    if (!novaSenha || !confirmarNovaSenha) {
+      setAuthError('Preencha e confirme a nova senha.')
+      return
+    }
+    if (novaSenha.length < 6) {
+      setAuthError('A nova senha precisa ter pelo menos 6 caracteres.')
+      return
+    }
+    if (novaSenha !== confirmarNovaSenha) {
+      setAuthError('A confirmacao da nova senha nao confere.')
+      return
+    }
+    const { error } = await supabase.auth.updateUser({ password: novaSenha })
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+    await supabase.auth.signOut()
+    limparUrlAuth()
+    setRecoveryMode(false)
+    setNovaSenha('')
+    setConfirmarNovaSenha('')
+    setPassword('')
+    setSession(null)
+    setAuthInfo('Senha redefinida com sucesso. Entre com a nova senha.')
+  }
+
+  async function cancelarRecuperacaoSenha() {
+    if (supabase) await supabase.auth.signOut()
+    limparUrlAuth()
+    setRecoveryMode(false)
+    setNovaSenha('')
+    setConfirmarNovaSenha('')
+    setAuthError('')
+    setAuthInfo('')
   }
 
   async function handleSyncClick() {
@@ -542,21 +642,39 @@ function App() {
     return (
       <main className="auth-screen">
         <section className="panel">
-          <h1>Sistema de Gestao de Colheita</h1>
-          <p className="muted">Acesso para operacao no campo, online ou offline.</p>
-          <p className="info">Fase de demonstracao: acesso somente por convite individual.</p>
-          {!hasSupabase && (
+          <h1>{recoveryMode ? 'Redefinir senha' : 'Sistema de Gestao de Colheita'}</h1>
+          <p className="muted">{recoveryMode ? 'Defina uma nova senha para voltar a acessar o sistema.' : 'Acesso para operacao no campo, online ou offline.'}</p>
+          {!recoveryMode && <p className="info">Fase de demonstracao: acesso somente por convite individual.</p>}
+          {!recoveryMode && !hasSupabase && (
             <p className="warning">
               Modo local ativo: o sistema funciona neste aparelho mesmo sem internet.
               Para compartilhar dados entre aparelhos, siga o guia simples em README_LEIGO.md.
             </p>
           )}
-          <label>Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
-          <label>Senha</label>
-          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+          {!recoveryMode && (
+            <>
+              <label>Email</label>
+              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
+              <label>Senha</label>
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+            </>
+          )}
+          {recoveryMode && (
+            <>
+              <label>Nova senha</label>
+              <input value={novaSenha} onChange={(e) => setNovaSenha(e.target.value)} type="password" />
+              <label>Confirmar nova senha</label>
+              <input value={confirmarNovaSenha} onChange={(e) => setConfirmarNovaSenha(e.target.value)} type="password" />
+            </>
+          )}
+          {authInfo && <p className="info">{authInfo}</p>}
           {authError && <p className="error">{authError}</p>}
-          <button onClick={login}>Entrar</button>
+          <div className="actions">
+            {!recoveryMode && <button onClick={login}>Entrar</button>}
+            {!recoveryMode && hasSupabase && <button className="button-ghost" onClick={() => void solicitarRecuperacaoSenha()}>Esqueci minha senha</button>}
+            {recoveryMode && <button onClick={() => void redefinirSenha()}>Salvar nova senha</button>}
+            {recoveryMode && <button className="button-ghost" onClick={() => void cancelarRecuperacaoSenha()}>Cancelar</button>}
+          </div>
         </section>
       </main>
     )
