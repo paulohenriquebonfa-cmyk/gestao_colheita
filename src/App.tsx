@@ -661,6 +661,7 @@ function AssistenteConfiguracao({
   const [pilotInicio, setPilotInicio] = useState(initialPilotConfig.inicio)
   const [pilotFim, setPilotFim] = useState(initialPilotConfig.fim)
   const [pilotOwnerEmail, setPilotOwnerEmail] = useState(initialPilotConfig.ownerEmail || user.email)
+  const [participantAccess, setParticipantAccess] = useState<PilotParticipant | null>(null)
   const lastSyncSuccess = localStorage.getItem(`last_sync_success_${user.id}`) ?? ''
 
   useEffect(() => {
@@ -670,6 +671,16 @@ function AssistenteConfiguracao({
       setSyncOpsByTable(grouped)
     })
   }, [user.id])
+
+  useEffect(() => {
+    if (!isOwnerUser) {
+      void db.pilot_participantes.where('email').equals(user.email.toLowerCase()).first().then((row) => {
+        setParticipantAccess(row ?? null)
+      })
+    }
+  }, [isOwnerUser, refreshTick, user.email])
+
+  const canUseTestEnv = isOwnerUser || Boolean(participantAccess?.can_use_test_env)
 
   function salvarConfigPiloto() {
     const cfg = {
@@ -1520,6 +1531,20 @@ function AssistenteConfiguracao({
         onSaved={onRefresh}
         isOwner={isOwnerUser}
       />
+      {canUseTestEnv && (
+        <>
+      <h3>Ambiente de Teste</h3>
+      <p className="muted">
+        {isOwnerUser
+          ? 'Estas acoes servem para demonstracao e validacao do sistema.'
+          : 'Seu usuario foi liberado para usar o ambiente de teste sem acesso administrativo completo.'}
+      </p>
+      <div className="actions">
+        <button onClick={() => void carregarDadosTeste()}>Carregar dados de teste</button>
+        <button onClick={() => void excluirDadosTeste()}>Excluir dados de teste</button>
+      </div>
+      </>
+      )}
       {isOwnerUser && (
         <>
       <h3>Administracao do Piloto</h3>
@@ -1548,13 +1573,6 @@ function AssistenteConfiguracao({
         <button onClick={() => void excluirTodosDados()}>Excluir todos os dados</button>
       </div>
       {backupInfo && <p className="info">{backupInfo}</p>}
-
-      <h3>Ambiente de Teste</h3>
-      <p className="muted">Estas acoes sao exclusivas do administrador e servem apenas para demonstracao e validacao do sistema.</p>
-      <div className="actions">
-        <button onClick={() => void carregarDadosTeste()}>Carregar dados de teste</button>
-        <button onClick={() => void excluirDadosTeste()}>Excluir dados de teste</button>
-      </div>
 
       <h3>Perfis e Acesso</h3>
       <div className="grid">
@@ -1877,6 +1895,24 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
     setParticipantes(await db.pilot_participantes.toArray())
   }
 
+  async function alterarPermissaoTesteParticipante(id: string, canUseTestEnv: boolean) {
+    const row = await db.pilot_participantes.get(id)
+    if (!row) return
+    const updated: PilotParticipant = {
+      ...row,
+      can_use_test_env: canUseTestEnv,
+      updated_at: nowIso(),
+      updated_by: user.id,
+      sync_status: 'pending_sync'
+    }
+    await db.pilot_participantes.put(updated)
+    await queueOp('pilot_participantes', updated.id, updated)
+    await runSync()
+    await registrarAuditoria(user.id, 'piloto_permissao_teste', `${row.email} => ${canUseTestEnv ? 'liberado' : 'bloqueado'}`)
+    setParticipantes(await db.pilot_participantes.toArray())
+    onNotify('success', canUseTestEnv ? 'Ambiente de teste liberado para o participante.' : 'Ambiente de teste removido do participante.')
+  }
+
   async function resetAmbientePiloto() {
     const confirmou = window.confirm('Resetar ambiente de PILOTO? Esta acao apaga dados de teste.')
     if (!confirmou) return
@@ -1951,10 +1987,14 @@ function OperacaoSaas({ user, onNotify }: { user: UserSession; onNotify: (type: 
         {participantes.length === 0 && <li>Nenhum participante convidado.</li>}
         {participantes.map((p) => (
           <li key={p.id}>
-            {p.nome} | {p.email} | status: {p.status} | entrada: {formatDateBr(p.data_entrada)} | ultimo acesso: {formatDateTimeBr(p.ultimo_acesso)} | ultimo sync: {formatDateTimeBr(p.ultimo_sync)}
+            {p.nome} | {p.email} | status: {p.status} | testes: {p.can_use_test_env ? 'liberado' : 'bloqueado'} | entrada: {formatDateBr(p.data_entrada)} | ultimo acesso: {formatDateTimeBr(p.ultimo_acesso)} | ultimo sync: {formatDateTimeBr(p.ultimo_sync)}
             <select value={p.status} onChange={(e) => void alterarStatusParticipante(p.id, e.target.value as PilotParticipant['status'])}>
               <option value="ativo">Ativo</option>
               <option value="inativo">Inativo</option>
+            </select>
+            <select value={p.can_use_test_env ? 'sim' : 'nao'} onChange={(e) => void alterarPermissaoTesteParticipante(p.id, e.target.value === 'sim')}>
+              <option value="nao">Sem teste</option>
+              <option value="sim">Pode testar</option>
             </select>
           </li>
         ))}

@@ -160,6 +160,7 @@ export interface PilotParticipant {
   email: string
   nome: string
   status: 'ativo' | 'inativo'
+  can_use_test_env?: boolean
   data_entrada: string
   ultimo_acesso?: string | null
   ultimo_sync?: string | null

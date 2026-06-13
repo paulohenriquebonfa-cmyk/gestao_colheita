@@ -136,6 +136,7 @@ create table if not exists pilot_participantes (
   email text not null,
   nome text not null,
   status text not null,
+  can_use_test_env boolean not null default false,
   data_entrada date not null,
   ultimo_acesso timestamptz,
   ultimo_sync timestamptz,
@@ -145,6 +146,7 @@ create table if not exists pilot_participantes (
   updated_by text not null,
   sync_status text not null
 );
+alter table pilot_participantes add column if not exists can_use_test_env boolean not null default false;
 
 create table if not exists feedback_items (
   id uuid primary key,
