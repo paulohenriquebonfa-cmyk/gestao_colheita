@@ -16,7 +16,7 @@ type Tab = 'dashboard' | 'cargas' | 'historico' | 'cadastros' | 'analises' | 'fr
 type UserSession = { id: string; email: string }
 type NoticeType = 'success' | 'error'
 type Notice = { type: NoticeType; message: string } | null
-type PilotConfig = { ativo: boolean; inicio: string; fim: string; ownerEmail: string }
+type PilotConfig = { ativo: boolean; inicio: string; fim: string; ownerEmail: string; ownerUserId?: string }
 
 const initialFilters: Filters = {}
 const LEGACY_SAFRA_NOME = 'Safra Legado'
@@ -210,7 +210,8 @@ function buildDefaultPilotConfig(): PilotConfig {
     ativo: true,
     inicio: localDateYmd(),
     fim: localDateYmd(new Date(new Date().setDate(new Date().getDate() + 45))),
-    ownerEmail: ''
+    ownerEmail: '',
+    ownerUserId: ''
   }
 }
 
@@ -224,7 +225,8 @@ function loadPilotConfigFromStorage(defaultOwnerEmail = ''): PilotConfig {
       ativo: typeof parsed.ativo === 'boolean' ? parsed.ativo : fallback.ativo,
       inicio: parsed.inicio || fallback.inicio,
       fim: parsed.fim || fallback.fim,
-      ownerEmail: parsed.ownerEmail || fallback.ownerEmail
+      ownerEmail: parsed.ownerEmail || fallback.ownerEmail,
+      ownerUserId: parsed.ownerUserId || fallback.ownerUserId
     }
   } catch {
     return fallback
@@ -249,21 +251,49 @@ function App() {
   const isOwner = useCallback((emailValue: string) => {
     const owner = pilotConfig.ownerEmail.trim().toLowerCase()
     const current = emailValue.trim().toLowerCase()
-    return !owner || owner === current
+    return Boolean(owner) && owner === current
   }, [pilotConfig.ownerEmail])
 
-  const resolveRole = useCallback((userId: string, emailValue: string): UserRole => {
+  const isOwnerSession = useCallback((userId: string, emailValue: string) => {
+    const ownerUserId = pilotConfig.ownerUserId?.trim()
+    if (ownerUserId) return ownerUserId === userId
+    return isOwner(emailValue)
+  }, [isOwner, pilotConfig.ownerUserId])
+
+  const persistPilotOwner = useCallback((userId: string, emailValue: string) => {
+    const normalizedEmail = emailValue.trim().toLowerCase()
+    const nextConfig: PilotConfig = {
+      ...pilotConfig,
+      ownerEmail: normalizedEmail,
+      ownerUserId: userId
+    }
+    setPilotConfig(nextConfig)
+    localStorage.setItem('pilot_config', JSON.stringify(nextConfig))
+  }, [pilotConfig])
+
+  const resolveRoleForSession = useCallback(async (userId: string, emailValue: string): Promise<UserRole> => {
+    const normalizedEmail = emailValue.trim().toLowerCase()
     const roleKey = `user_role_${userId}`
     const savedRole = localStorage.getItem(roleKey) as UserRole | null
-    if (!savedRole) return isOwner(emailValue) ? 'proprietario' : 'operador'
-    if (!isOwner(emailValue) && savedRole === 'proprietario') return 'operador'
+    const participant = await db.pilot_participantes.where('email').equals(normalizedEmail).first()
+    const isInvitedAccount = Boolean(participant && participant.created_by !== userId)
+    const ownerByConfig = isOwnerSession(userId, emailValue)
+    const shouldOwnSession = ownerByConfig || (!isInvitedAccount && (!pilotConfig.ownerEmail || savedRole === 'proprietario'))
+
+    if (shouldOwnSession) {
+      persistPilotOwner(userId, normalizedEmail)
+      localStorage.setItem(roleKey, 'proprietario')
+      return 'proprietario'
+    }
+
+    if (!savedRole || savedRole === 'proprietario') return 'operador'
     return savedRole
-  }, [isOwner])
+  }, [isOwnerSession, persistPilotOwner, pilotConfig.ownerEmail])
 
   const validarConvite = useCallback(async (emailValue: string) => {
     if (!pilotConfig.ativo) return true
-    if (isOwner(emailValue)) return true
     const normalized = emailValue.trim().toLowerCase()
+    if (isOwner(normalized)) return true
     const localInvite = await db.pilot_participantes.where('email').equals(normalized).first()
     if (localInvite?.status === 'ativo') return true
 
@@ -282,8 +312,9 @@ function App() {
       }
     }
 
+    if (!pilotConfig.ownerEmail.trim()) return true
     return false
-  }, [isOwner, pilotConfig.ativo])
+  }, [isOwner, pilotConfig.ativo, pilotConfig.ownerEmail])
 
   useEffect(() => {
     installSyncListeners()
@@ -343,14 +374,8 @@ function App() {
       const s = data.session
       if (s?.user) {
         const sess = { id: s.user.id, email: s.user.email ?? 'usuario' }
-        if (!pilotConfig.ownerEmail && sess.email) {
-          const cfg = { ...pilotConfig, ownerEmail: sess.email }
-          setPilotConfig(cfg)
-          localStorage.setItem('pilot_config', JSON.stringify(cfg))
-        }
         setSession(sess)
         void registrarAuditoria(sess.id, 'sessao_restaurada', 'Sessao Supabase restaurada')
-        setUserRole(resolveRole(sess.id, sess.email))
         const onboardKey = `onboarding_done_${sess.id}`
         if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
         void limparPendenciasLegadas(sess.id)
@@ -359,11 +384,13 @@ function App() {
           if (!ok) {
             setSession(null)
             setAuthError('Acesso de piloto restrito. Solicite convite ao administrador.')
+            return
           }
+          void resolveRoleForSession(sess.id, sess.email).then(setUserRole)
         })
       }
     })
-  }, [limparPendenciasLegadas, pilotConfig, resolveRole, validarConvite])
+  }, [limparPendenciasLegadas, resolveRoleForSession, validarConvite])
 
   const triggerRefresh = () => setRefreshTick((v) => v + 1)
   const notify = (type: NoticeType, message: string) => {
@@ -406,11 +433,6 @@ function App() {
         setAuthError(error?.message ?? 'Falha no login')
         return
       }
-      if (!pilotConfig.ownerEmail && data.user.email) {
-        const cfg = { ...pilotConfig, ownerEmail: data.user.email }
-        setPilotConfig(cfg)
-        localStorage.setItem('pilot_config', JSON.stringify(cfg))
-      }
       const invited = await validarConvite(data.user.email ?? email)
       if (!invited) {
         await supabase.auth.signOut()
@@ -431,7 +453,7 @@ function App() {
         await db.pilot_participantes.put(updated)
         await queueOp('pilot_participantes', updated.id, updated)
       }
-      setUserRole(resolveRole(data.user.id, data.user.email ?? email))
+      setUserRole(await resolveRoleForSession(data.user.id, data.user.email ?? email))
       const onboardKey = `onboarding_done_${data.user.id}`
       if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
       await limparPendenciasLegadas(data.user.id)
@@ -445,11 +467,6 @@ function App() {
     }
 
     const sess = { id: `local-${email}`, email }
-    if (!pilotConfig.ownerEmail) {
-      const cfg = { ...pilotConfig, ownerEmail: email }
-      setPilotConfig(cfg)
-      localStorage.setItem('pilot_config', JSON.stringify(cfg))
-    }
     const invited = await validarConvite(email)
     if (!invited) {
       setAuthError('Acesso de piloto restrito. Seu email ainda nao foi convidado.')
@@ -457,7 +474,7 @@ function App() {
     }
     setSession(sess)
     await registrarAuditoria(sess.id, 'login_local', 'Login em modo local sem Supabase')
-    setUserRole(resolveRole(sess.id, sess.email))
+    setUserRole(await resolveRoleForSession(sess.id, sess.email))
     const onboardKey = `onboarding_done_${sess.id}`
     if (!localStorage.getItem(onboardKey)) setOnboardingOpen(true)
   }
@@ -602,7 +619,7 @@ function App() {
       {currentTab === 'analises' && <Analises refreshTick={refreshTick} userId={session.id} activeSafraId={activeSafraId} activeSafra={safraAtiva} />}
       {currentTab === 'frete' && <Frete refreshTick={refreshTick} ownerEmail={session.email} userId={session.id} activeSafraId={activeSafraId} setActiveSafraId={(safraId) => { void selecionarSafraGlobal(session.id, safraId) }} onNotify={notify} />}
       {currentTab === 'vendas' && userRole !== 'leitura' && <ArmazenagemVendas userId={session.id} refreshTick={refreshTick} activeSafraId={activeSafraId} activeSafra={safraAtiva} onSaved={triggerRefresh} onNotify={notify} />}
-      {currentTab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} refreshTick={refreshTick} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwner(session.email)} />}
+      {currentTab === 'config' && <AssistenteConfiguracao onNotify={notify} user={session} onRefresh={triggerRefresh} refreshTick={refreshTick} userRole={userRole} setUserRole={setUserRole} isOwnerUser={isOwnerSession(session.id, session.email)} />}
       {onboardingOpen && (
         <OnboardingPiloto
           user={session}
@@ -659,7 +676,8 @@ function AssistenteConfiguracao({
       ativo: pilotAtivo,
       inicio: pilotInicio,
       fim: pilotFim,
-      ownerEmail: pilotOwnerEmail.trim().toLowerCase() || user.email
+      ownerEmail: pilotOwnerEmail.trim().toLowerCase() || user.email,
+      ownerUserId: user.id
     }
     localStorage.setItem('pilot_config', JSON.stringify(cfg))
     onNotify('success', 'Configuracao do piloto salva com sucesso.')
