@@ -1492,6 +1492,9 @@ function AssistenteConfiguracao({
           Conta convidada: configuracoes administrativas ficam visiveis apenas para o dono do sistema.
         </p>
       )}
+      {userRole !== 'leitura' && (
+        <GestaoSafras userId={user.id} onNotify={onNotify} onSaved={onRefresh} />
+      )}
       <FeedbackPiloto
         user={user}
         onNotify={onNotify}
@@ -1622,6 +1625,160 @@ function AssistenteConfiguracao({
       <OperacaoSaas user={user} onNotify={onNotify} />
       </>
       )}
+    </section>
+  )
+}
+
+function GestaoSafras({
+  userId,
+  onNotify,
+  onSaved
+}: {
+  userId: string
+  onNotify: (type: NoticeType, message: string) => void
+  onSaved: () => void
+}) {
+  const [armazens, setArmazens] = useState<BaseEntity[]>([])
+  const [safras, setSafras] = useState<Safra[]>([])
+  const [safraNome, setSafraNome] = useState('')
+  const [safraCultura, setSafraCultura] = useState('')
+  const [safraAno, setSafraAno] = useState(String(new Date().getFullYear()))
+  const [safraInicio, setSafraInicio] = useState('')
+  const [safraFim, setSafraFim] = useState('')
+  const [safraAtivaNova, setSafraAtivaNova] = useState(true)
+  const [saldoInicialPorArmazem, setSaldoInicialPorArmazem] = useState<Record<string, string>>({})
+
+  const carregar = useCallback(async () => {
+    const [armazemRows, safraRows] = await Promise.all([
+      db.armazens.toArray(),
+      db.safras.toArray()
+    ])
+    setArmazens(armazemRows.filter((item) => item.created_by === userId))
+    setSafras(
+      safraRows
+        .filter((item) => item.created_by === userId)
+        .map(normalizarSafra)
+        .sort((a, b) => b.data_inicio.localeCompare(a.data_inicio))
+    )
+  }, [userId])
+
+  useEffect(() => {
+    void Promise.all([db.armazens.toArray(), db.safras.toArray()]).then(([armazemRows, safraRows]) => {
+      setArmazens(armazemRows.filter((item) => item.created_by === userId))
+      setSafras(
+        safraRows
+          .filter((item) => item.created_by === userId)
+          .map(normalizarSafra)
+          .sort((a, b) => b.data_inicio.localeCompare(a.data_inicio))
+      )
+    })
+  }, [userId])
+
+  async function salvarSafra() {
+    if (!safraNome.trim() || !safraCultura.trim() || !safraAno.trim() || !safraInicio || !safraFim) {
+      onNotify('error', 'Preencha nome, cultura, ano e periodo da safra.')
+      return
+    }
+    if (safraFim < safraInicio) {
+      onNotify('error', 'Data final da safra nao pode ser menor que a inicial.')
+      return
+    }
+    const now = nowIso()
+    const ativa = safraAtivaNova || safras.length === 0
+    if (ativa) {
+      await definirSafraAtiva(userId, '')
+    }
+    const row: Safra = {
+      id: makeId(),
+      nome: safraNome.trim(),
+      cultura: safraCultura.trim().toLowerCase(),
+      ano: safraAno.trim(),
+      ativa,
+      data_inicio: safraInicio,
+      data_fim: safraFim,
+      created_at: now,
+      updated_at: now,
+      created_by: userId,
+      updated_by: userId,
+      sync_status: 'pending_sync'
+    }
+    await db.safras.put(row)
+    await queueOp('safras', row.id, row)
+    if (ativa) {
+      await definirSafraAtiva(userId, row.id)
+    }
+    for (const armazem of armazens) {
+      const saldo = parsePtBrNumber(saldoInicialPorArmazem[armazem.id] ?? '')
+      if (!Number.isFinite(saldo) || saldo <= 0) continue
+      const estoque: EstoqueArmazem = {
+        id: makeId(),
+        safra_id: row.id,
+        armazem_id: armazem.id,
+        saldo_sacas: saldo,
+        created_at: now,
+        updated_at: now,
+        created_by: userId,
+        updated_by: userId,
+        sync_status: 'pending_sync'
+      }
+      await db.estoque_armazem.put(estoque)
+      await queueOp('estoque_armazem', estoque.id, estoque)
+      await registrarMovimentoEstoque({
+        userId,
+        safraId: row.id,
+        tipo: 'entrada',
+        armazemId: armazem.id,
+        sacas: saldo,
+        origem: 'manual',
+        referenciaId: estoque.id,
+        motivo: 'Saldo inicial da safra'
+      })
+    }
+    try {
+      await runSync()
+    } catch {
+      onNotify('success', 'Safra salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
+    }
+    setSafraNome('')
+    setSafraCultura('')
+    setSafraAno(String(new Date().getFullYear()))
+    setSafraInicio('')
+    setSafraFim('')
+    setSafraAtivaNova(true)
+    setSaldoInicialPorArmazem({})
+    await carregar()
+    onSaved()
+    onNotify('success', 'Safra salva com sucesso.')
+  }
+
+  return (
+    <section className="panel">
+      <h3>Safras</h3>
+      <p className="muted">A safra organiza dashboard, cargas, analises, frete, estoque e vendas. Crie aqui a nova safra e, se precisar, lance o saldo inicial por armazem.</p>
+      <div className="grid">
+        <input placeholder="Nome da safra (ex: Safra Soja 2026)" value={safraNome} onChange={(e) => setSafraNome(e.target.value)} />
+        <input placeholder="Cultura (soja, milho...)" value={safraCultura} onChange={(e) => setSafraCultura(e.target.value)} />
+        <input placeholder="Ano da safra" value={safraAno} onChange={(e) => setSafraAno(e.target.value)} />
+        <input type="date" value={safraInicio} onChange={(e) => setSafraInicio(e.target.value)} />
+        <input type="date" value={safraFim} onChange={(e) => setSafraFim(e.target.value)} />
+      </div>
+      <label>
+        <input type="checkbox" checked={safraAtivaNova} onChange={(e) => setSafraAtivaNova(e.target.checked)} /> Definir esta safra como ativa ao salvar
+      </label>
+      <p className="muted">Saldo inicial opcional por armazem para comecar a nova safra sem misturar estoque antigo.</p>
+      <div className="grid frete-saldo-grid">
+        {armazens.map((armazem) => (
+          <input
+            key={armazem.id}
+            placeholder={`Saldo inicial - ${armazem.nome}`}
+            value={saldoInicialPorArmazem[armazem.id] ?? ''}
+            onChange={(e) => setSaldoInicialPorArmazem((prev) => ({ ...prev, [armazem.id]: e.target.value }))}
+          />
+        ))}
+      </div>
+      <div className="actions">
+        <button onClick={() => void salvarSafra()}>Salvar safra</button>
+      </div>
     </section>
   )
 }
@@ -3867,13 +4024,6 @@ function Frete({
   const [tarifaArmazemIds, setTarifaArmazemIds] = useState<string[]>([])
   const [tarifaValorPorSaca, setTarifaValorPorSaca] = useState('')
   const [tarifaObservacao, setTarifaObservacao] = useState('')
-  const [safraNome, setSafraNome] = useState('')
-  const [safraCultura, setSafraCultura] = useState('')
-  const [safraAno, setSafraAno] = useState(String(new Date().getFullYear()))
-  const [safraInicio, setSafraInicio] = useState('')
-  const [safraFim, setSafraFim] = useState('')
-  const [safraAtivaNova, setSafraAtivaNova] = useState(true)
-  const [saldoInicialPorArmazem, setSaldoInicialPorArmazem] = useState<Record<string, string>>({})
   const [dieselData, setDieselData] = useState(localDateYmd())
   const [dieselLitros, setDieselLitros] = useState('')
   const [dieselPreco, setDieselPreco] = useState('')
@@ -4031,84 +4181,6 @@ function Frete({
   const resumoReprocessamento = Number.isFinite(tarifaValorNum) && tarifaValorNum >= 0
     ? resumirReprocessamentoFrete(cargasDaRota, tarifaValorNum)
     : null
-
-  async function salvarSafra() {
-    if (!safraNome.trim() || !safraCultura.trim() || !safraAno.trim() || !safraInicio || !safraFim) {
-      onNotify('error', 'Preencha nome, cultura, ano e periodo da safra.')
-      return
-    }
-    if (safraFim < safraInicio) {
-      onNotify('error', 'Data final da safra nao pode ser menor que a inicial.')
-      return
-    }
-    const now = nowIso()
-    const ativa = safraAtivaNova || safras.length === 0
-    if (ativa) {
-      await definirSafraAtiva(userId, '')
-    }
-    const row: Safra = {
-      id: makeId(),
-      nome: safraNome.trim(),
-      cultura: safraCultura.trim().toLowerCase(),
-      ano: safraAno.trim(),
-      ativa,
-      data_inicio: safraInicio,
-      data_fim: safraFim,
-      created_at: now,
-      updated_at: now,
-      created_by: userId,
-      updated_by: userId,
-      sync_status: 'pending_sync'
-    }
-    await db.safras.put(row)
-    await queueOp('safras', row.id, row)
-    if (ativa) {
-      await definirSafraAtiva(userId, row.id)
-      setActiveSafraId(row.id)
-    }
-    for (const armazem of armazens) {
-      const saldo = parsePtBrNumber(saldoInicialPorArmazem[armazem.id] ?? '')
-      if (!Number.isFinite(saldo) || saldo <= 0) continue
-      const estoque: EstoqueArmazem = {
-        id: makeId(),
-        safra_id: row.id,
-        armazem_id: armazem.id,
-        saldo_sacas: saldo,
-        created_at: now,
-        updated_at: now,
-        created_by: userId,
-        updated_by: userId,
-        sync_status: 'pending_sync'
-      }
-      await db.estoque_armazem.put(estoque)
-      await queueOp('estoque_armazem', estoque.id, estoque)
-      await registrarMovimentoEstoque({
-        userId,
-        safraId: row.id,
-        tipo: 'entrada',
-        armazemId: armazem.id,
-        sacas: saldo,
-        origem: 'manual',
-        referenciaId: estoque.id,
-        motivo: 'Saldo inicial da safra'
-      })
-    }
-    try {
-      await runSync()
-    } catch {
-      onNotify('success', 'Safra salva neste aparelho. Sincronize depois quando a nuvem estiver disponivel.')
-    }
-    if (ativa || !activeSafraId) setSafraId(row.id)
-    setSafraNome('')
-    setSafraCultura('')
-    setSafraAno(String(new Date().getFullYear()))
-    setSafraInicio('')
-    setSafraFim('')
-    setSafraAtivaNova(true)
-    setSaldoInicialPorArmazem({})
-    await carregar()
-    onNotify('success', 'Safra salva com sucesso.')
-  }
 
   async function salvarTarifaRota() {
     if (!safraIdAtual) {
@@ -4523,32 +4595,6 @@ function Frete({
     <section className="panel">
       <h2>Frete por Safra e Caminhao</h2>
       <p className="muted">Safra em exibicao: {safraSelecionada ? `${safraSelecionada.nome} | ${safraSelecionada.cultura} ${safraSelecionada.ano}` : 'nenhuma safra selecionada'}</p>
-      <h3>Cadastro de Safra</h3>
-      <div className="grid">
-        <input placeholder="Nome da safra (ex: Safra Soja 2026)" value={safraNome} onChange={(e) => setSafraNome(e.target.value)} />
-        <input placeholder="Cultura (soja, milho...)" value={safraCultura} onChange={(e) => setSafraCultura(e.target.value)} />
-        <input placeholder="Ano da safra" value={safraAno} onChange={(e) => setSafraAno(e.target.value)} />
-        <input type="date" value={safraInicio} onChange={(e) => setSafraInicio(e.target.value)} />
-        <input type="date" value={safraFim} onChange={(e) => setSafraFim(e.target.value)} />
-      </div>
-      <label>
-        <input type="checkbox" checked={safraAtivaNova} onChange={(e) => setSafraAtivaNova(e.target.checked)} /> Definir esta safra como ativa ao salvar
-      </label>
-      <p className="muted">Saldo inicial opcional por armazem para comecar a nova safra sem misturar estoque antigo.</p>
-      <div className="grid frete-saldo-grid">
-        {armazens.map((armazem) => (
-          <input
-            key={armazem.id}
-            placeholder={`Saldo inicial - ${armazem.nome}`}
-            value={saldoInicialPorArmazem[armazem.id] ?? ''}
-            onChange={(e) => setSaldoInicialPorArmazem((prev) => ({ ...prev, [armazem.id]: e.target.value }))}
-          />
-        ))}
-      </div>
-      <div className="actions">
-        <button onClick={() => void salvarSafra()}>Salvar safra</button>
-      </div>
-
       <h3>Tarifa por rota</h3>
       <div className="grid">
         <SelectFromList label="Propriedade da rota" value={tarifaPropriedadeId} onChange={selecionarPropriedadeTarifa} items={propriedades} />
